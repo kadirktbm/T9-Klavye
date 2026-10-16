@@ -39,7 +39,6 @@ class T9Service : InputMethodService() {
     private val WRAP = LinearLayout.LayoutParams.WRAP_CONTENT
     private val handler = Handler(Looper.getMainLooper())
 
-    // ---------- Ayarlar ----------
     private var bgColor = Color.parseColor("#1E2124")
     private var keyColor = Color.parseColor("#2D3235")
     private var keyPressedColor = Color.parseColor("#4A5256")
@@ -60,7 +59,6 @@ class T9Service : InputMethodService() {
     private var vibrator: Vibrator? = null
     private var audio: AudioManager? = null
 
-    // ---------- Tuş haritası ve sözlük ----------
     private val keyMap = linkedMapOf(
         '2' to "abcç", '3' to "def", '4' to "ghıiğ", '5' to "jkl",
         '6' to "mnoö", '7' to "pqrsş", '8' to "tuüv", '9' to "wxyz"
@@ -71,7 +69,6 @@ class T9Service : InputMethodService() {
     private var codes = ArrayList<String>()
     private var wordSet = HashSet<String>()
 
-    // ---------- Yazma durumu ----------
     private var digits = ""
     private var candidates: List<String> = emptyList()
     private var index = 0
@@ -97,19 +94,16 @@ class T9Service : InputMethodService() {
         }
     }
 
-    // ---------- Sonraki kelime tahmini ----------
     private val bigram = HashMap<String, HashMap<String, Int>>()
     private var lastWord = ""
     private var nextWords: List<String> = emptyList()
     private var bigramDirty = 0
 
-    // ---------- Pano ----------
     private val clips = ArrayList<String>()
     private var lastClip = ""
     private var clipboard: ClipboardManager? = null
     private val clipListener = ClipboardManager.OnPrimaryClipChangedListener { captureClip() }
 
-    // ---------- Uzun basış kaydırmalı pencere ----------
     private var lpRunnable: Runnable? = null
     private var lpShown = false
     private var lpChars: List<String> = emptyList()
@@ -119,7 +113,6 @@ class T9Service : InputMethodService() {
     private var lpX = 0f
     private val lpViews = ArrayList<TextView>()
 
-    // ---------- Görünümler ----------
     private lateinit var candidateBar: LinearLayout
     private lateinit var shiftKey: TextView
     private lateinit var modeKey: TextView
@@ -1231,4 +1224,68 @@ class T9Service : InputMethodService() {
         val eBox = LinearLayout(this)
         eBox.orientation = LinearLayout.VERTICAL
         val emojiler = ("😀 😃 😄 😁 😆 😅 😂 🤣 🙂 🙃 😉 😊 😇 🥰 😍 🤩 😘 😋 😛 😜 🤪 🤗 🤭 🤔 " +
-            "😐 😑 😶 😏 😒 🙄 😬 😌 😔 😪 😴 😷 🤒 🥵 🥶 😵 🤯 🤠 😎 🤓
+            "😐 😑 😶 😏 😒 🙄 😬 😌 😔 😪 😴 😷 🤒 🥵 🥶 😵 🤯 🤠 😎 🤓 😕 😟 🙁 😮 😲 😳 🥺 " +
+            "😨 😰 😥 😢 😭 😱 😖 😞 😓 😩 😫 🥱 😤 😡 😠 🤬 😈 💀 💩 🤡 👻 👽 🤖 " +
+            "👍 👎 👌 ✌️ 🤞 🤟 🤘 🤙 👈 👉 👆 👇 ☝️ ✋ 👋 👏 🙌 🤝 🙏 💪 " +
+            "❤️ 🧡 💛 💚 💙 💜 🖤 🤍 💔 💕 💞 💓 💗 💖 💘 💝 " +
+            "🔥 ✨ ⭐ 🌟 💥 💫 💦 🎉 🎊 🎁 🎂 🎈 🌹 🌸 🌞 🌙 ☀️ ❄️ 🌈 ☕ 🍕 🍔 🍟 🍰 🍎 🍌 🍉 🍺 " +
+            "⚽ 🏀 🎵 🎶 📱 💻 📷 🎮 🚗 ✈️ 🏠 💰 💯 ✅ ❌ ⚠️ ❓ ❗ 🇹🇷").split(" ")
+        var erow = LinearLayout(this)
+        for ((i, em) in emojiler.withIndex()) {
+            if (i % 8 == 0) {
+                erow = LinearLayout(this)
+                erow.orientation = LinearLayout.HORIZONTAL
+                erow.weightSum = 8f
+                eBox.addView(erow, LinearLayout.LayoutParams(MATCH, sc(46)))
+            }
+            erow.addView(makeKey(em, null, 22f) { punct(em) }, lp(0, MATCH, 1f))
+        }
+        eScroll.addView(eBox)
+        emojiArea.addView(eScroll, LinearLayout.LayoutParams(0, MATCH, 6f))
+        val eRight = LinearLayout(this)
+        eRight.orientation = LinearLayout.VERTICAL
+        eRight.addView(makeBackspaceKey(), lp(MATCH, 0, 1f))
+        eRight.addView(makeKey("!?#", null, 16f) { showPanel(1) }, lp(MATCH, 0, 1f))
+        eRight.addView(makeKey("123", null, 18f) { showPanel(2) }, lp(MATCH, 0, 1f))
+        emojiArea.addView(eRight, LinearLayout.LayoutParams(0, MATCH, 1f))
+        root.addView(emojiArea, LinearLayout.LayoutParams(MATCH, sc(176)))
+
+        clipArea = LinearLayout(this)
+        clipArea.orientation = LinearLayout.VERTICAL
+        val actions = LinearLayout(this)
+        actions.orientation = LinearLayout.HORIZONTAL
+        actions.addView(makeKey("Tümünü seç", null, 12f) { doAction(android.R.id.selectAll) }, lp(0, MATCH, 1.4f))
+        actions.addView(makeKey("Kes", null, 13f) { doAction(android.R.id.cut) }, lp(0, MATCH, 1f))
+        actions.addView(makeKey("Kopyala", null, 13f) { doAction(android.R.id.copy) }, lp(0, MATCH, 1.2f))
+        actions.addView(makeKey("Yapıştır", null, 13f) { doAction(android.R.id.paste) }, lp(0, MATCH, 1.3f))
+        actions.addView(makeBackspaceKey(), lp(0, MATCH, 0.9f))
+        clipArea.addView(actions, LinearLayout.LayoutParams(MATCH, sc(44)))
+        val cScroll = ScrollView(this)
+        clipList = LinearLayout(this)
+        clipList.orientation = LinearLayout.VERTICAL
+        cScroll.addView(clipList)
+        clipArea.addView(cScroll, LinearLayout.LayoutParams(MATCH, 0, 1f))
+        root.addView(clipArea, LinearLayout.LayoutParams(MATCH, sc(176)))
+
+        val bottom = LinearLayout(this)
+        bottom.orientation = LinearLayout.HORIZONTAL
+        modeKey = makeKey("12#", null, 16f) { toggleMode() }
+        bottom.addView(modeKey, lp(0, MATCH, 1f))
+        t9Key = makeKey("T9", if (t9On) "açık" else "kapalı", 15f) { toggleT9() }
+        t9Key.setTextColor(if (t9On) accent else textColor)
+        bottom.addView(t9Key, lp(0, MATCH, 1f))
+        bottom.addView(makeKey(",", null) { punct(",") }, lp(0, MATCH, 0.7f))
+        bottom.addView(makeKey("Türkçe", null, 14f) { punct(" ") }, lp(0, MATCH, 3f))
+        bottom.addView(makeKey(".", null) { punct(".") }, lp(0, MATCH, 0.7f))
+        bottom.addView(makeKey("↵", null, 22f) { onEnter() }, lp(0, MATCH, 1.2f))
+        root.addView(bottom, LinearLayout.LayoutParams(MATCH, sc(52)))
+
+        val frame = FrameLayout(this)
+        frame.addView(root, FrameLayout.LayoutParams(MATCH, WRAP))
+        overlay = FrameLayout(this)
+        frame.addView(overlay, FrameLayout.LayoutParams(MATCH, MATCH))
+
+        showPanel(panel)
+        return frame
+    }
+}
