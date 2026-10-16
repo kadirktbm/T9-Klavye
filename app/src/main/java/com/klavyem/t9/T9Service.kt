@@ -84,6 +84,8 @@ class T9Service : InputMethodService() {
     private var popupRow: View? = null
     private var popupItems = ArrayList<TextView>()
     private var hovered: TextView? = null
+    private var downX = 0f
+    private var downY = 0f
     private var digits = ""
     private var candidates: List<String> = emptyList()
     private var index = 0
@@ -874,7 +876,10 @@ class T9Service : InputMethodService() {
         }
         // Uzun basıp parmağı kaldırmadan menüye kayarak seçme
         k.setOnTouchListener { _, ev ->
-            if (popup != null) {
+            if (ev.action == MotionEvent.ACTION_DOWN) {
+                downX = ev.rawX
+                downY = ev.rawY
+            } else if (popup != null) {
                 if (ev.action == MotionEvent.ACTION_MOVE) {
                     hoverAt(ev.rawX, ev.rawY)
                 } else if (ev.action == MotionEvent.ACTION_UP) {
@@ -903,12 +908,11 @@ class T9Service : InputMethodService() {
     }
 
     private fun hoverAt(rx: Float, ry: Float): TextView? {
-        val row = popupRow ?: return null
-        val rl = IntArray(2)
-        row.getLocationOnScreen(rl)
+        if (popupRow == null) return null
         var hit: TextView? = null
-        // Parmak menü hizasına ya da üstüne çıkmış olmalı
-        if (ry <= rl[1] + row.height + dp(6)) {
+        // Parmak yukarı ya da yana yeterince kaymış olmalı (kaymadan bırakınca seçim olmaz)
+        val moved = (downY - ry) > dp(12) || Math.abs(rx - downX) > dp(14)
+        if (moved) {
             for (tv in popupItems) {
                 val l = IntArray(2)
                 tv.getLocationOnScreen(l)
@@ -964,7 +968,7 @@ class T9Service : InputMethodService() {
         pw.isOutsideTouchable = true
         popup = pw
         try {
-            pw.showAsDropDown(anchor, 0, -(anchor.height + row.measuredHeight))
+            pw.showAsDropDown(anchor, (anchor.width - row.measuredWidth) / 2, -(anchor.height + row.measuredHeight))
         } catch (e: Exception) {
             popup = null
         }
