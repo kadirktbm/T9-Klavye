@@ -1,205 +1,124 @@
 package com.klavyem.t9
 
 import android.app.Activity
-import android.content.Context
 import android.content.Intent
-import android.content.SharedPreferences
-import android.graphics.Typeface
+import android.graphics.Color
+import android.net.Uri
 import android.os.Bundle
-import android.provider.Settings
-import android.view.View
-import android.view.inputmethod.InputMethodManager
+import android.view.Gravity
 import android.widget.Button
 import android.widget.LinearLayout
-import android.widget.RadioButton
-import android.widget.RadioGroup
-import android.widget.ScrollView
-import android.widget.SeekBar
-import android.widget.Switch
 import android.widget.TextView
-import android.widget.Toast
 import java.io.File
+import java.util.Locale
 
 class SettingsActivity : Activity() {
 
-    private lateinit var prefs: SharedPreferences
-    private lateinit var root: LinearLayout
+    private val REQ_EXPORT = 1
+    private val REQ_IMPORT = 2
+    private val tr = Locale("tr", "TR")
+    private lateinit var info: TextView
+
+    private fun userFile() = File(filesDir, "kullanici.txt")
+
+    private fun readWords(): List<String> =
+        try {
+            if (userFile().exists()) userFile().readLines().map { it.trim() }.filter { it.isNotEmpty() }
+            else emptyList()
+        } catch (e: Exception) {
+            emptyList()
+        }
 
     private fun dp(v: Int) = (v * resources.displayMetrics.density).toInt()
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        prefs = getSharedPreferences("ayarlar", Context.MODE_PRIVATE)
-        title = "T9 Klavyem Ayarları"
 
-        root = LinearLayout(this)
+        val root = LinearLayout(this)
         root.orientation = LinearLayout.VERTICAL
-        root.setPadding(dp(16), dp(16), dp(16), dp(32))
-        val scroll = ScrollView(this)
-        scroll.addView(root)
-        setContentView(scroll)
+        root.setBackgroundColor(Color.parseColor("#1F2326"))
+        root.gravity = Gravity.CENTER_HORIZONTAL
+        root.setPadding(dp(20), dp(40), dp(20), dp(20))
 
-        addTitle("Kurulum")
-        addButton("Klavyeyi etkinleştir") {
-            startActivity(Intent(Settings.ACTION_INPUT_METHOD_SETTINGS))
-        }
-        addButton("Klavyeyi seç (şimdi kullan)") {
-            val imm = getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager
-            imm.showInputMethodPicker()
-        }
+        val title = TextView(this)
+        title.text = "T9 Klavye Ayarları"
+        title.textSize = 22f
+        title.setTextColor(Color.WHITE)
+        title.gravity = Gravity.CENTER
+        root.addView(title)
 
-        addTitle("Tema")
-        addStringChoice(
-            "tema", "koyu",
-            listOf("Koyu", "Açık", "Tam siyah"),
-            listOf("koyu", "acik", "siyah")
-        )
+        info = TextView(this)
+        info.textSize = 16f
+        info.setTextColor(Color.parseColor("#26C6B0"))
+        info.gravity = Gravity.CENTER
+        info.setPadding(0, dp(20), 0, dp(20))
+        root.addView(info)
 
-        addTitle("Klavye yüksekliği")
-        addIntChoice(
-            "yukseklik", 100,
-            listOf("Küçük", "Normal", "Büyük", "Çok büyük"),
-            listOf(85, 100, 115, 130)
-        )
-
-        addTitle("Yazı boyutu")
-        addIntChoice(
-            "yazi", 100,
-            listOf("Küçük", "Normal", "Büyük", "Çok büyük"),
-            listOf(85, 100, 115, 135)
-        )
-
-        addTitle("Ses ve titreşim")
-        addSwitch("ses", true, "Tuş sesi (telefonun \"dokunma sesleri\" ayarı da açık olmalı)")
-        addSwitch("titresim", true, "Tuş titreşimi")
-        addVibrationBar()
-
-        addTitle("Yazım")
-        addSwitch("buyukHarf", true, "Cümle başında otomatik büyük harf")
-        addSwitch("sonraki", true, "Sonraki kelime tahmini")
-
-        addTitle("Verileri temizle")
-        addButton("Eklediğim kelimeleri sil") {
-            File(filesDir, "kullanici.txt").delete()
-            markCleared("Eklenen kelimeler silindi")
-        }
-        addButton("Kelime tahmini geçmişini sil") {
-            File(filesDir, "bigram.txt").delete()
-            markCleared("Tahmin geçmişi silindi")
-        }
-        addButton("Pano geçmişini sil") {
-            File(filesDir, "pano.txt").delete()
-            markCleared("Pano geçmişi silindi")
-        }
-
-        val note = TextView(this)
-        note.text = "Not: Tema ve boyut değişiklikleri, klavyeyi bir sonraki açışınızda uygulanır. " +
-            "Şifre alanlarında kelime öğrenme ve pano kaydı yapılmaz."
-        note.textSize = 13f
-        note.setPadding(0, dp(20), 0, 0)
-        root.addView(note)
-    }
-
-    private fun markCleared(msg: String) {
-        prefs.edit().putLong("temizlendi", System.currentTimeMillis()).apply()
-        Toast.makeText(this, msg, Toast.LENGTH_SHORT).show()
-    }
-
-    private fun addTitle(text: String) {
-        val tv = TextView(this)
-        tv.text = text
-        tv.textSize = 18f
-        tv.setTypeface(null, Typeface.BOLD)
-        tv.setPadding(0, dp(22), 0, dp(6))
-        root.addView(tv)
-    }
-
-    private fun addButton(text: String, action: () -> Unit) {
-        val b = Button(this)
-        b.text = text
-        b.isAllCaps = false
-        b.setOnClickListener { action() }
-        root.addView(
-            b,
-            LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT,
-                LinearLayout.LayoutParams.WRAP_CONTENT
+        fun button(text: String, action: () -> Unit) {
+            val b = Button(this)
+            b.text = text
+            b.textSize = 18f
+            b.setOnClickListener { action() }
+            root.addView(
+                b,
+                LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.MATCH_PARENT, dp(64)
+                ).apply { setMargins(0, dp(8), 0, dp(8)) }
             )
-        )
-    }
+        }
 
-    private fun addSwitch(key: String, def: Boolean, text: String) {
-        val sw = Switch(this)
-        sw.text = text
-        sw.isChecked = prefs.getBoolean(key, def)
-        sw.setPadding(0, dp(8), 0, dp(8))
-        sw.setOnCheckedChangeListener { _, checked ->
-            prefs.edit().putBoolean(key, checked).apply()
-        }
-        root.addView(sw)
-    }
-
-    private fun addStringChoice(key: String, def: String, labels: List<String>, values: List<String>) {
-        val group = RadioGroup(this)
-        group.orientation = RadioGroup.VERTICAL
-        val cur = prefs.getString(key, def) ?: def
-        val ids = ArrayList<Int>()
-        for ((i, l) in labels.withIndex()) {
-            val rb = RadioButton(this)
-            rb.text = l
-            val id = View.generateViewId()
-            rb.id = id
-            ids.add(id)
-            group.addView(rb)
-            if (values[i] == cur) group.check(id)
-        }
-        group.setOnCheckedChangeListener { _, checkedId ->
-            val i = ids.indexOf(checkedId)
-            if (i >= 0) prefs.edit().putString(key, values[i]).apply()
-        }
-        root.addView(group)
-    }
-
-    private fun addIntChoice(key: String, def: Int, labels: List<String>, values: List<Int>) {
-        val group = RadioGroup(this)
-        group.orientation = RadioGroup.VERTICAL
-        val cur = prefs.getInt(key, def)
-        val ids = ArrayList<Int>()
-        for ((i, l) in labels.withIndex()) {
-            val rb = RadioButton(this)
-            rb.text = l
-            val id = View.generateViewId()
-            rb.id = id
-            ids.add(id)
-            group.addView(rb)
-            if (values[i] == cur) group.check(id)
-        }
-        group.setOnCheckedChangeListener { _, checkedId ->
-            val i = ids.indexOf(checkedId)
-            if (i >= 0) prefs.edit().putInt(key, values[i]).apply()
-        }
-        root.addView(group)
-    }
-
-    private fun addVibrationBar() {
-        val label = TextView(this)
-        val cur = prefs.getInt("titresimMs", 18)
-        label.text = "Titreşim süresi: $cur ms"
-        label.setPadding(0, dp(8), 0, 0)
-        root.addView(label)
-        val bar = SeekBar(this)
-        bar.max = 55
-        bar.progress = cur - 5
-        bar.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
-            override fun onProgressChanged(s: SeekBar?, p: Int, fromUser: Boolean) {
-                prefs.edit().putInt("titresimMs", p + 5).apply()
-                label.text = "Titreşim süresi: ${p + 5} ms"
+        button("Kelimelerimi yedekle") {
+            if (readWords().isEmpty()) {
+                info.text = "Yedeklenecek kendi kelimeniz yok."
+            } else {
+                val i = Intent(Intent.ACTION_CREATE_DOCUMENT)
+                i.addCategory(Intent.CATEGORY_OPENABLE)
+                i.type = "text/plain"
+                i.putExtra(Intent.EXTRA_TITLE, "t9-kelime-yedegi.txt")
+                startActivityForResult(i, REQ_EXPORT)
             }
+        }
+        button("Yedeği geri yükle") {
+            val i = Intent(Intent.ACTION_OPEN_DOCUMENT)
+            i.addCategory(Intent.CATEGORY_OPENABLE)
+            i.type = "*/*"
+            startActivityForResult(i, REQ_IMPORT)
+        }
+        button("Kapat") { finish() }
 
-            override fun onStartTrackingTouch(s: SeekBar?) {}
+        setContentView(root)
+        showCount()
+    }
 
-            override fun onStopTrackingTouch(s: SeekBar?) {}
-        })
-        root.addView(bar)
+    private fun showCount() {
+        info.text = "Kendi eklediğiniz kelime sayısı: " + readWords().size
+    }
+
+    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+        super.onActivityResult(requestCode, resultCode, data)
+        val uri: Uri = data?.data ?: return
+        if (resultCode != RESULT_OK) return
+        try {
+            if (requestCode == REQ_EXPORT) {
+                val text = readWords().joinToString("\n") + "\n"
+                contentResolver.openOutputStream(uri, "wt")?.use { it.write(text.toByteArray(Charsets.UTF_8)) }
+                info.text = "Yedek kaydedildi: " + readWords().size + " kelime."
+            } else if (requestCode == REQ_IMPORT) {
+                val text = contentResolver.openInputStream(uri)?.use {
+                    it.readBytes().toString(Charsets.UTF_8)
+                } ?: ""
+                val merged = LinkedHashSet<String>()
+                readWords().forEach { merged.add(it.lowercase(tr)) }
+                var added = 0
+                text.lines().forEach { line ->
+                    val w = line.trim().lowercase(tr)
+                    if (w.isNotEmpty() && w.length < 40 && !w.contains(" ") && merged.add(w)) added++
+                }
+                userFile().writeText(merged.joinToString("\n") + "\n")
+                info.text = "Geri yüklendi: " + added + " yeni kelime eklendi. Toplam: " + merged.size
+            }
+        } catch (e: Exception) {
+            info.text = "İşlem başarısız oldu. Dosyayı kontrol edip tekrar deneyin."
+        }
     }
 }
