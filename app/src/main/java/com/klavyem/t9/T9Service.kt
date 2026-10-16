@@ -3,11 +3,11 @@ package com.klavyem.t9
 import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
+import android.content.SharedPreferences
 import android.graphics.Color
 import android.graphics.drawable.GradientDrawable
 import android.graphics.drawable.StateListDrawable
 import android.inputmethodservice.InputMethodService
-import android.media.AudioManager
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
@@ -20,8 +20,10 @@ import android.text.TextUtils
 import android.text.style.ForegroundColorSpan
 import android.text.style.RelativeSizeSpan
 import android.view.Gravity
+import android.view.HapticFeedbackConstants
 import android.view.KeyEvent
 import android.view.MotionEvent
+import android.view.SoundEffectConstants
 import android.view.View
 import android.view.inputmethod.EditorInfo
 import android.widget.FrameLayout
@@ -32,32 +34,35 @@ import android.widget.TextView
 import java.io.File
 import java.util.Locale
 
+private const val EMOJIS =
+    "😀 😃 😄 😁 😆 😅 😂 🤣 🙂 🙃 😉 😊 😇 🥰 😍 🤩 😘 😋 😛 😜 🤪 🤗 🤭 🤔 " +
+    "😐 😑 😶 😏 😒 🙄 😬 😌 😔 😪 😴 😷 🤒 🤕 🤢 🤮 🥵 🥶 😵 🤯 🤠 🥳 😎 🤓 " +
+    "😕 😟 🙁 😮 😲 😳 🥺 😦 😨 😰 😥 😢 😭 😱 😖 😣 😞 😓 😩 😫 🥱 😤 😡 😠 " +
+    "🤬 😈 💀 💩 🤡 👻 👽 🤖 👍 👎 👌 🤞 🤟 🤘 👈 👉 👆 👇 👋 🤚 ✋ 🖖 👏 🙌 " +
+    "🤝 🙏 💪 👀 🧠 🧡 💛 💚 💙 💜 🖤 🤍 💔 💕 💖 💯 🔥 ✨ ⭐ 🎉 🎁 🌹 🌸 🌙 " +
+    "☕ 🍕 🍔 🍰 🎂 ⚽ 🚗 🏠 📱 💻 📷 🎵 ✅ ❌ ❓ ❗"
+
 class T9Service : InputMethodService() {
 
     private val tr = Locale("tr", "TR")
     private val MATCH = LinearLayout.LayoutParams.MATCH_PARENT
     private val WRAP = LinearLayout.LayoutParams.WRAP_CONTENT
-    private val handler = Handler(Looper.getMainLooper())
-
-    private var bgColor = Color.parseColor("#1E2124")
+    private val teal = Color.parseColor("#26C6B0")
+    private lateinit var prefs: SharedPreferences
+    private var txt = Color.WHITE
+    private var rootColor = Color.parseColor("#1F2326")
     private var keyColor = Color.parseColor("#2D3235")
     private var keyPressedColor = Color.parseColor("#4A5256")
-    private var textColor = Color.WHITE
-    private var subColor = Color.GRAY
-    private var accent = Color.parseColor("#26C6B0")
-    private var hScale = 1f
-    private var tScale = 1f
+    private var fontScale = 1f
+    private var heightScale = 1f
     private var soundOn = true
-    private var vibrateOn = true
+    private var vibOn = true
     private var vibMs = 18
-    private var capOn = true
-    private var nextOn = true
-    private var prefsSig = ""
-    private var clearStamp = 0L
-    private var started = false
-    private var learnOn = true
-    private var vibrator: Vibrator? = null
-    private var audio: AudioManager? = null
+    private var nextPref = true
+    private var privateField = false
+    private var builtVer = -1
+    private var panoStamp = 0L
+    private val handler = Handler(Looper.getMainLooper())
 
     private val keyMap = linkedMapOf(
         '2' to "abcç", '3' to "def", '4' to "ghıiğ", '5' to "jkl",
@@ -69,21 +74,33 @@ class T9Service : InputMethodService() {
     private var codes = ArrayList<String>()
     private var wordSet = HashSet<String>()
 
+    // Sonraki kelime tahmini
+    private var bigram = HashMap<String, List<String>>()
+    private var nextWords: List<String> = emptyList()
+
+    private var userStamp = 0L
     private var digits = ""
     private var candidates: List<String> = emptyList()
     private var index = 0
     private var shift = false
     private var autoShift = false
+    private var capsLock = false
+    private var lastShiftTap = 0L
     private var autoCapAllowed = false
     private var t9On = true
     private var panel = 0
+    private var uiReady = false
 
     private var pendingActive = false
     private var pendingKey = '2'
     private var pendingIdx = 0
     private val manualWord = StringBuilder()
     private val commitRunnable = Runnable { commitPending() }
-    private val autoCapRunnable = Runnable { autoCap() }
+    private val autoCapRunnable = Runnable {
+        autoCap()
+        refreshNext()
+        renderBar()
+    }
 
     private var repeatCount = 0
     private val repeatRunnable = object : Runnable {
@@ -94,36 +111,22 @@ class T9Service : InputMethodService() {
         }
     }
 
-    private val bigram = HashMap<String, HashMap<String, Int>>()
-    private var lastWord = ""
-    private var nextWords: List<String> = emptyList()
-    private var bigramDirty = 0
-
     private val clips = ArrayList<String>()
     private var lastClip = ""
     private var clipboard: ClipboardManager? = null
     private val clipListener = ClipboardManager.OnPrimaryClipChangedListener { captureClip() }
 
-    private var lpRunnable: Runnable? = null
-    private var lpShown = false
-    private var lpChars: List<String> = emptyList()
-    private var lpSel = -1
-    private var lpLeft = 0
-    private var lpCell = 0
-    private var lpX = 0f
-    private val lpViews = ArrayList<TextView>()
-
     private lateinit var candidateBar: LinearLayout
     private lateinit var shiftKey: TextView
     private lateinit var modeKey: TextView
     private lateinit var t9Key: TextView
+    private lateinit var spaceKey: TextView
     private lateinit var mainArea: LinearLayout
     private lateinit var symbolArea: LinearLayout
     private lateinit var numArea: LinearLayout
     private lateinit var emojiArea: LinearLayout
     private lateinit var clipArea: LinearLayout
     private lateinit var clipList: LinearLayout
-    private lateinit var overlay: FrameLayout
 
     override fun onCreate() {
         super.onCreate()
@@ -132,128 +135,77 @@ class T9Service : InputMethodService() {
             for (c in letters) letterToDigit[c] = d
         }
         tapMap['1'] = ".,@?!'-"
-        loadPrefs()
-        vibrator = getSystemService(Context.VIBRATOR_SERVICE) as? Vibrator
-        audio = getSystemService(Context.AUDIO_SERVICE) as? AudioManager
+        prefs = getSharedPreferences("ayar", Context.MODE_PRIVATE)
         loadWords()
         loadClips()
-        loadBigrams()
-        clipboard = getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
+        clipboard = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
         clipboard?.addPrimaryClipChangedListener(clipListener)
-        started = true
     }
 
     override fun onDestroy() {
         clipboard?.removePrimaryClipChangedListener(clipListener)
-        saveBigrams()
+        handler.removeCallbacksAndMessages(null)
         super.onDestroy()
-    }
-
-    override fun onFinishInput() {
-        super.onFinishInput()
-        saveBigrams()
     }
 
     override fun onEvaluateFullscreenMode(): Boolean = false
 
+    override fun onFinishInputView(finishingInput: Boolean) {
+        super.onFinishInputView(finishingInput)
+    }
+
     override fun onStartInputView(info: EditorInfo?, restarting: Boolean) {
         super.onStartInputView(info, restarting)
-        val oldSig = prefsSig
-        loadPrefs()
-        if (oldSig != prefsSig) setInputView(onCreateInputView())
-
+        // Ayarlar değiştiyse klavyeyi yeniden kur
+        if (uiReady && prefs.getInt("ver", 0) != builtVer) setInputView(onCreateInputView())
+        // Pano silindiyse yeniden oku
+        if (File(filesDir, "pano.txt").lastModified() != panoStamp) {
+            clips.clear()
+            loadClips()
+        }
+        // Geri yükleme yapıldıysa kullanıcı sözlüğünü yeniden oku
+        if (File(filesDir, "kullanici.txt").lastModified() != userStamp) loadWords()
         handler.removeCallbacks(commitRunnable)
         handler.removeCallbacks(repeatRunnable)
-        hideLongPress()
         pendingActive = false
         manualWord.setLength(0)
         digits = ""
         candidates = emptyList()
-        index = 0
-        lastWord = ""
         nextWords = emptyList()
+        index = 0
+        capsLock = false
         resetShift()
 
         val type = info?.inputType ?: 0
         val cls = type and InputType.TYPE_MASK_CLASS
         val v = type and InputType.TYPE_MASK_VARIATION
-        val isPass = (cls == InputType.TYPE_CLASS_TEXT &&
-            (v == InputType.TYPE_TEXT_VARIATION_PASSWORD ||
+        privateField = cls == InputType.TYPE_CLASS_TEXT && (
+            v == InputType.TYPE_TEXT_VARIATION_PASSWORD ||
                 v == InputType.TYPE_TEXT_VARIATION_VISIBLE_PASSWORD ||
-                v == InputType.TYPE_TEXT_VARIATION_WEB_PASSWORD)) ||
-            (cls == InputType.TYPE_CLASS_NUMBER && v == InputType.TYPE_NUMBER_VARIATION_PASSWORD)
-        learnOn = !isPass
-        autoCapAllowed = cls == InputType.TYPE_CLASS_TEXT && !isPass &&
+                v == InputType.TYPE_TEXT_VARIATION_WEB_PASSWORD
+            ) || (cls == InputType.TYPE_CLASS_NUMBER &&
+            (type and InputType.TYPE_NUMBER_VARIATION_PASSWORD) != 0)
+        autoCapAllowed = prefs.getBoolean("otoBuyuk", true) && cls == InputType.TYPE_CLASS_TEXT &&
+            v != InputType.TYPE_TEXT_VARIATION_PASSWORD &&
+            v != InputType.TYPE_TEXT_VARIATION_VISIBLE_PASSWORD &&
+            v != InputType.TYPE_TEXT_VARIATION_WEB_PASSWORD &&
             v != InputType.TYPE_TEXT_VARIATION_EMAIL_ADDRESS &&
             v != InputType.TYPE_TEXT_VARIATION_WEB_EMAIL_ADDRESS &&
             v != InputType.TYPE_TEXT_VARIATION_URI
 
-        if (!restarting && ::mainArea.isInitialized && ::symbolArea.isInitialized &&
-            ::numArea.isInitialized && ::emojiArea.isInitialized &&
-            ::clipArea.isInitialized && ::modeKey.isInitialized
-        ) {
+        if (!restarting && uiReady) {
             showPanel(
                 if (cls == InputType.TYPE_CLASS_NUMBER || cls == InputType.TYPE_CLASS_PHONE) 2 else 0
             )
         }
         captureClip()
-        refreshNext()
+        renderBar()
         autoCapSoon()
     }
 
-    private fun loadPrefs() {
-        val p = getSharedPreferences("ayarlar", Context.MODE_PRIVATE)
-        val tema = p.getString("tema", "koyu") ?: "koyu"
-        hScale = p.getInt("yukseklik", 100) / 100f
-        tScale = p.getInt("yazi", 100) / 100f
-        soundOn = p.getBoolean("ses", true)
-        vibrateOn = p.getBoolean("titresim", true)
-        vibMs = p.getInt("titresimMs", 18)
-        capOn = p.getBoolean("buyukHarf", true)
-        nextOn = p.getBoolean("sonraki", true)
-        when (tema) {
-            "acik" -> {
-                bgColor = Color.parseColor("#E3E5E8")
-                keyColor = Color.parseColor("#FFFFFF")
-                keyPressedColor = Color.parseColor("#C5C9CE")
-                textColor = Color.parseColor("#1F2328")
-                subColor = Color.parseColor("#6B7075")
-                accent = Color.parseColor("#00897B")
-            }
-            "siyah" -> {
-                bgColor = Color.BLACK
-                keyColor = Color.parseColor("#1A1A1A")
-                keyPressedColor = Color.parseColor("#3A3A3A")
-                textColor = Color.WHITE
-                subColor = Color.GRAY
-                accent = Color.parseColor("#26C6B0")
-            }
-            else -> {
-                bgColor = Color.parseColor("#1E2124")
-                keyColor = Color.parseColor("#2D3235")
-                keyPressedColor = Color.parseColor("#4A5256")
-                textColor = Color.WHITE
-                subColor = Color.GRAY
-                accent = Color.parseColor("#26C6B0")
-            }
-        }
-        prefsSig = tema + "|" + hScale + "|" + tScale
-        val cs = p.getLong("temizlendi", 0L)
-        if (cs != clearStamp) {
-            clearStamp = cs
-            if (started) reloadAfterClear()
-        }
-    }
-
-    private fun reloadAfterClear() {
-        clips.clear()
-        bigram.clear()
-        seedBigrams()
-        lastClip = currentClipText() ?: ""
-        loadWords()
-    }
-
+    // ---------- Sözlük ----------
     private fun loadWords() {
+        userStamp = File(filesDir, "kullanici.txt").lastModified()
         Thread {
             val w = ArrayList<String>()
             val c = ArrayList<String>()
@@ -280,10 +232,24 @@ class T9Service : InputMethodService() {
                 }
             } catch (e: Exception) {
             }
+            val bg = HashMap<String, List<String>>()
+            try {
+                assets.open("bigram.tsv").bufferedReader().use { r ->
+                    r.lineSequence().forEach { line ->
+                        val p = line.trim().split(Regex("\\s+"), 2)
+                        if (p.size == 2) {
+                            val list = p[1].split(",").map { it.trim() }.filter { it.isNotEmpty() }
+                            if (list.isNotEmpty()) bg[p[0].lowercase(tr)] = list
+                        }
+                    }
+                }
+            } catch (e: Exception) {
+            }
             handler.post {
                 words = w
                 codes = c
                 wordSet = seen
+                bigram = bg
             }
         }.start()
     }
@@ -297,53 +263,74 @@ class T9Service : InputMethodService() {
     private fun finishManualWord() {
         val w = manualWord.toString()
         manualWord.setLength(0)
-        if (!learnOn || w.length < 2) return
-        registerWord(w)
-        if (wordSet.contains(w)) return
+        if (privateField || w.length < 2 || wordSet.contains(w)) return
         val code = toCode(w) ?: return
         words.add(0, w)
         codes.add(0, code)
         wordSet.add(w)
         try {
-            File(filesDir, "kullanici.txt").appendText(w + "\n")
+            val uf = File(filesDir, "kullanici.txt")
+            uf.appendText(w + "\n")
+            userStamp = uf.lastModified()
         } catch (e: Exception) {
         }
     }
 
+    // ---------- Sonraki kelime tahmini ----------
+    // İmlecin önündeki metne bakar: son karakter boşluksa ve ondan önce bir kelime varsa
+    // o kelimenin bigram listesini öneri olarak gösterir.
+    private fun refreshNext() {
+        nextWords = emptyList()
+        if (!nextPref || digits.isNotEmpty() || pendingActive || bigram.isEmpty()) return
+        val before = currentInputConnection?.getTextBeforeCursor(60, 0)?.toString() ?: return
+        if (before.isEmpty() || before.last() != ' ') return
+        val last = before.trimEnd().takeLastWhile { it.isLetter() }
+        if (last.isEmpty()) return
+        nextWords = bigram[last.lowercase(tr)] ?: emptyList()
+    }
+
+    // ---------- Büyük harf ----------
     private fun setShift(on: Boolean) {
         shift = on
-        if (::shiftKey.isInitialized) shiftKey.setTextColor(if (on) accent else textColor)
+        if (::shiftKey.isInitialized) {
+            shiftKey.setTextColor(if (on) teal else txt)
+            shiftKey.text = if (capsLock) "⇪" else "⇧"
+        }
     }
 
     private fun resetShift() {
         autoShift = false
-        setShift(false)
+        if (capsLock) setShift(true) else setShift(false)
     }
+
+    private fun styled(w: String): String =
+        if (capsLock) w.uppercase(tr) else if (shift) cap(w) else w
 
     private fun autoCapSoon() {
         handler.removeCallbacks(autoCapRunnable)
-        handler.postDelayed(autoCapRunnable, 60)
+        handler.postDelayed(autoCapRunnable, 80)
     }
 
     private fun autoCap() {
-        if (!capOn || !autoCapAllowed || digits.isNotEmpty() || pendingActive) return
+        if (!autoCapAllowed || digits.isNotEmpty() || pendingActive) return
         val mode = currentInputConnection?.getCursorCapsMode(TextUtils.CAP_MODE_SENTENCES) ?: 0
         if (mode != 0) {
             autoShift = true
             setShift(true)
-        } else if (autoShift) {
+        } else if (autoShift && !capsLock) {
             autoShift = false
             setShift(false)
         }
     }
 
+    // ---------- T9 mantığı ----------
     private fun cap(w: String) =
         if (w.isEmpty()) w else w.substring(0, 1).uppercase(tr) + w.substring(1)
 
     private fun current(): String {
         if (candidates.isEmpty() || index >= candidates.size) return ""
         val w = candidates[index]
-        return if (shift) cap(w) else w
+        return styled(w)
     }
 
     private fun updateCandidates() {
@@ -363,6 +350,7 @@ class T9Service : InputMethodService() {
         if (list.isEmpty()) list.add(digits.map { keyMap[it]!![0] }.joinToString(""))
         candidates = list
         index = 0
+        nextWords = emptyList()
         showComposing()
         renderBar()
     }
@@ -374,10 +362,7 @@ class T9Service : InputMethodService() {
     private fun commitWord(trailing: String) {
         val ic = currentInputConnection ?: return
         if (digits.isNotEmpty()) {
-            val w = current()
-            ic.commitText(w + trailing, 1)
-            manualWord.setLength(0)
-            registerWord(w)
+            ic.commitText(current() + trailing, 1)
             digits = ""
             candidates = emptyList()
             index = 0
@@ -388,26 +373,7 @@ class T9Service : InputMethodService() {
         }
     }
 
-    private fun commitChip(s: String) {
-        val ic = currentInputConnection ?: return
-        digits = ""
-        candidates = emptyList()
-        index = 0
-        ic.setComposingText("", 1)
-        val isLetter = s.length == 1 && s[0].isLetter()
-        if (isLetter) {
-            ic.commitText(if (shift) s.uppercase(tr) else s, 1)
-            manualWord.append(s.lowercase(tr))
-        } else {
-            finishManualWord()
-            ic.commitText(s, 1)
-            lastWord = ""
-        }
-        resetShift()
-        renderBar()
-        autoCapSoon()
-    }
-
+    // ---------- Manuel (çoklu dokunma) yazım ----------
     private fun letterFor(d: Char, i: Int): String {
         val s = tapMap[d] ?: return ""
         val ch = s[i % s.length].toString()
@@ -425,6 +391,7 @@ class T9Service : InputMethodService() {
             pendingIdx = 0
             pendingActive = true
         }
+        nextWords = emptyList()
         currentInputConnection?.setComposingText(letterFor(d, pendingIdx), 1)
         handler.postDelayed(commitRunnable, 900)
     }
@@ -448,6 +415,7 @@ class T9Service : InputMethodService() {
         commitWord("")
     }
 
+    // ---------- Tuş işlemleri ----------
     private fun onDigit(d: Char) {
         if (!t9On) {
             onManualKey(d)
@@ -473,6 +441,18 @@ class T9Service : InputMethodService() {
         }
     }
 
+    private fun onSpace() {
+        if (digits.isNotEmpty()) {
+            commitWord(" ")
+        } else {
+            commitPending()
+            finishManualWord()
+            currentInputConnection?.commitText(" ", 1)
+            resetShift()
+        }
+        autoCapSoon()
+    }
+
     private fun onBackspace() {
         if (pendingActive) {
             handler.removeCallbacks(commitRunnable)
@@ -493,10 +473,8 @@ class T9Service : InputMethodService() {
             return
         }
         if (manualWord.isNotEmpty()) manualWord.setLength(manualWord.length - 1)
-        sendDownUpKeyEvents(KeyEvent.KEYCODE_DEL)
-        lastWord = ""
         nextWords = emptyList()
-        renderBar()
+        sendDownUpKeyEvents(KeyEvent.KEYCODE_DEL)
         autoCapSoon()
     }
 
@@ -514,16 +492,13 @@ class T9Service : InputMethodService() {
         val count = before.length - i
         if (count > 0) ic.deleteSurroundingText(count, 0)
         manualWord.setLength(0)
-        lastWord = ""
         nextWords = emptyList()
-        renderBar()
         autoCapSoon()
     }
 
     private fun onEnter() {
         commitAll()
         finishManualWord()
-        lastWord = ""
         val opts = currentInputEditorInfo?.imeOptions ?: 0
         val action = opts and EditorInfo.IME_MASK_ACTION
         val noEnter = (opts and EditorInfo.IME_FLAG_NO_ENTER_ACTION) != 0
@@ -534,7 +509,7 @@ class T9Service : InputMethodService() {
         } else {
             sendDownUpKeyEvents(KeyEvent.KEYCODE_ENTER)
         }
-        refreshNext()
+        nextWords = emptyList()
         autoCapSoon()
     }
 
@@ -542,22 +517,27 @@ class T9Service : InputMethodService() {
         commitAll()
         finishManualWord()
         currentInputConnection?.commitText(s, 1)
-        if (s == "." || s == "!" || s == "?" || s == "…" ||
-            (s.length == 1 && s[0].isDigit())
-        ) {
-            lastWord = ""
-        }
         resetShift()
-        refreshNext()
+        nextWords = emptyList()
         autoCapSoon()
     }
 
     private fun toggleShift() {
+        val now = System.currentTimeMillis()
         autoShift = false
-        setShift(!shift)
-        if (digits.isNotEmpty()) {
-            showComposing()
+        if (capsLock) {
+            // Caps lock açıkken tek basış kapatır
+            capsLock = false
+            setShift(false)
+        } else if (shift && now - lastShiftTap < 400) {
+            // Hızlı iki basış: caps lock
+            capsLock = true
+            setShift(true)
+        } else {
+            setShift(!shift)
         }
+        lastShiftTap = now
+        if (digits.isNotEmpty()) showComposing()
         renderBar()
     }
 
@@ -565,44 +545,29 @@ class T9Service : InputMethodService() {
         commitAll()
         t9On = !t9On
         t9Key.text = label("T9", if (t9On) "açık" else "kapalı")
-        t9Key.setTextColor(if (t9On) accent else textColor)
-        renderBar()
+        t9Key.setTextColor(if (t9On) teal else txt)
     }
 
-    private fun commitLiteral(s: String) {
-        val isLetter = s.length == 1 && s[0].isLetter()
-        if (!isLetter) {
-            punct(s)
-            return
-        }
-        commitAll()
-        currentInputConnection?.commitText(if (shift) s.uppercase(tr) else s, 1)
-        manualWord.append(s.lowercase(tr))
-        resetShift()
-        renderBar()
-        autoCapSoon()
-    }
-
-    private fun commitNext(w: String) {
-        commitAll()
-        finishManualWord()
-        val t = if (shift) cap(w) else w
-        currentInputConnection?.commitText(t + " ", 1)
-        resetShift()
-        registerWord(w)
-        refreshNext()
-        autoCapSoon()
-    }
-
+    // ---------- Paneller ----------
+    // 0 = T9, 1 = simge, 2 = sayı, 3 = emoji, 4 = pano
     private fun showPanel(p: Int) {
         panel = p
-        hideLongPress()
         modeKey.text = if (p == 0) "12#" else "abc"
         mainArea.visibility = if (p == 0) View.VISIBLE else View.GONE
         symbolArea.visibility = if (p == 1) View.VISIBLE else View.GONE
         numArea.visibility = if (p == 2) View.VISIBLE else View.GONE
         emojiArea.visibility = if (p == 3) View.VISIBLE else View.GONE
         clipArea.visibility = if (p == 4) View.VISIBLE else View.GONE
+        if (::t9Key.isInitialized) t9Key.visibility = if (p == 2) View.GONE else View.VISIBLE
+        if (::spaceKey.isInitialized) {
+            if (p == 2) {
+                spaceKey.text = label("0", "uzun bas: boşluk")
+                spaceKey.textSize = 22f
+            } else {
+                spaceKey.text = "Türkçe"
+                spaceKey.textSize = 16f
+            }
+        }
         if (p == 4) renderClips()
     }
 
@@ -611,24 +576,26 @@ class T9Service : InputMethodService() {
         showPanel(if (panel == 0) 1 else 0)
     }
 
-    private fun togglePano() {
-        commitAll()
-        showPanel(if (panel == 4) 0 else 4)
-    }
-
     private fun openSettings() {
+        commitAll()
         try {
-            val i = Intent()
-            i.setClassName(this, "com.klavyem.t9.SettingsActivity")
+            val i = Intent(this, SettingsActivity::class.java)
             i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
             startActivity(i)
         } catch (e: Exception) {
         }
     }
 
+    private fun togglePano() {
+        commitAll()
+        showPanel(if (panel == 4) 0 else 4)
+    }
+
+    // ---------- Pano ----------
     private fun loadClips() {
         try {
             val f = File(filesDir, "pano.txt")
+            panoStamp = f.lastModified()
             if (f.exists()) {
                 f.readText().split("\u001F").filter { it.isNotBlank() }.forEach { clips.add(it) }
             }
@@ -638,26 +605,25 @@ class T9Service : InputMethodService() {
 
     private fun saveClips() {
         try {
-            File(filesDir, "pano.txt").writeText(clips.joinToString("\u001F"))
+            val pf = File(filesDir, "pano.txt")
+            pf.writeText(clips.joinToString("\u001F"))
+            panoStamp = pf.lastModified()
         } catch (e: Exception) {
-        }
-    }
-
-    private fun currentClipText(): String? {
-        return try {
-            val clip = clipboard?.primaryClip
-            if (clip == null || clip.itemCount == 0) null
-            else clip.getItemAt(0).coerceToText(this)?.toString()
-        } catch (e: Exception) {
-            null
         }
     }
 
     private fun captureClip() {
-        val t = currentClipText() ?: return
-        if (t == lastClip) return
-        lastClip = t
-        addClip(t)
+        try {
+            if (privateField) return
+            val cm = clipboard ?: return
+            val clip = cm.primaryClip ?: return
+            if (clip.itemCount == 0) return
+            val t = clip.getItemAt(0).coerceToText(this)?.toString() ?: return
+            if (t == lastClip) return
+            lastClip = t
+            addClip(t)
+        } catch (e: Exception) {
+        }
     }
 
     private fun addClip(t: String) {
@@ -674,6 +640,7 @@ class T9Service : InputMethodService() {
         commitAll()
         manualWord.setLength(0)
         currentInputConnection?.commitText(t, 1)
+        nextWords = emptyList()
         showPanel(0)
         autoCapSoon()
     }
@@ -689,8 +656,8 @@ class T9Service : InputMethodService() {
         if (clips.isEmpty()) {
             val tv = TextView(this)
             tv.text = "Pano boş. Kopyaladığınız metinler burada görünür."
-            tv.setTextColor(subColor)
-            tv.textSize = 14f * tScale
+            tv.setTextColor(Color.GRAY)
+            tv.textSize = 14f
             tv.setPadding(dp(12), dp(12), dp(12), dp(12))
             clipList.addView(tv)
             return
@@ -698,16 +665,13 @@ class T9Service : InputMethodService() {
         for (c in ArrayList(clips)) {
             val tv = TextView(this)
             tv.text = c
-            tv.textSize = 15f * tScale
+            tv.textSize = 15f
             tv.maxLines = 2
             tv.ellipsize = TextUtils.TruncateAt.END
-            tv.setTextColor(textColor)
+            tv.setTextColor(txt)
             tv.setPadding(dp(12), dp(8), dp(12), dp(8))
             tv.background = keyBg()
-            tv.setOnClickListener {
-                feedback()
-                pasteClip(c)
-            }
+            tv.setOnClickListener { pasteClip(c) }
             tv.setOnLongClickListener {
                 clips.remove(c)
                 saveClips()
@@ -718,259 +682,58 @@ class T9Service : InputMethodService() {
         }
     }
 
-    private fun buzz() {
-        if (!vibrateOn) return
-        try {
-            val vb = vibrator ?: return
-            if (Build.VERSION.SDK_INT >= 26) {
-                vb.vibrate(VibrationEffect.createOneShot(vibMs.toLong(), VibrationEffect.DEFAULT_AMPLITUDE))
-            } else {
-                vb.vibrate(vibMs.toLong())
+    // ---------- Ayarlar ----------
+    private fun loadPrefs() {
+        builtVer = prefs.getInt("ver", 0)
+        when (prefs.getInt("tema", 0)) {
+            1 -> {
+                txt = Color.parseColor("#202124")
+                rootColor = Color.parseColor("#E3E6E8")
+                keyColor = Color.parseColor("#FFFFFF")
+                keyPressedColor = Color.parseColor("#C5CACD")
             }
-        } catch (e: Exception) {
+            2 -> {
+                txt = Color.WHITE
+                rootColor = Color.BLACK
+                keyColor = Color.parseColor("#141414")
+                keyPressedColor = Color.parseColor("#3A3A3A")
+            }
+            else -> {
+                txt = Color.WHITE
+                rootColor = Color.parseColor("#1F2326")
+                keyColor = Color.parseColor("#2D3235")
+                keyPressedColor = Color.parseColor("#4A5256")
+            }
         }
+        val scales = floatArrayOf(0.85f, 1f, 1.15f, 1.3f)
+        heightScale = scales[prefs.getInt("yukseklik", 1).coerceIn(0, 3)]
+        fontScale = scales[prefs.getInt("yazi", 1).coerceIn(0, 3)]
+        soundOn = prefs.getBoolean("ses", true)
+        vibOn = prefs.getBoolean("titresim", true)
+        vibMs = prefs.getInt("titresimMs", 18)
+        nextPref = prefs.getBoolean("sonrakiTahmin", true)
     }
 
-    private fun feedback() {
-        if (soundOn) {
+    private fun feedback(v: View) {
+        if (soundOn) v.playSoundEffect(SoundEffectConstants.CLICK)
+        if (vibOn) {
             try {
-                audio?.playSoundEffect(AudioManager.FX_KEYPRESS_STANDARD, -1f)
+                @Suppress("DEPRECATION")
+                val vb = getSystemService(Context.VIBRATOR_SERVICE) as Vibrator
+                if (Build.VERSION.SDK_INT >= 26) {
+                    vb.vibrate(VibrationEffect.createOneShot(vibMs.toLong(), VibrationEffect.DEFAULT_AMPLITUDE))
+                } else {
+                    @Suppress("DEPRECATION")
+                    vb.vibrate(vibMs.toLong())
+                }
             } catch (e: Exception) {
-            }
-        }
-        buzz()
-    }
-
-    private fun attachLongPress(
-        tv: TextView, chars: List<String>, onTap: () -> Unit, onPick: (String) -> Unit
-    ) {
-        tv.setOnTouchListener { v, ev ->
-            when (ev.actionMasked) {
-                MotionEvent.ACTION_DOWN -> {
-                    lpX = ev.rawX
-                    v.isPressed = true
-                    feedback()
-                    lpShown = false
-                    val r = Runnable { showLongPress(v, chars) }
-                    lpRunnable = r
-                    handler.postDelayed(r, 280)
-                }
-                MotionEvent.ACTION_MOVE -> {
-                    lpX = ev.rawX
-                    if (lpShown) updateLongPress(ev.rawX)
-                }
-                MotionEvent.ACTION_UP -> {
-                    v.isPressed = false
-                    lpRunnable?.let { handler.removeCallbacks(it) }
-                    lpRunnable = null
-                    if (lpShown) {
-                        val pick = if (lpSel >= 0 && lpSel < lpChars.size) lpChars[lpSel] else null
-                        hideLongPress()
-                        if (pick != null) onPick(pick)
-                    } else {
-                        onTap()
-                    }
-                }
-                MotionEvent.ACTION_CANCEL -> {
-                    v.isPressed = false
-                    lpRunnable?.let { handler.removeCallbacks(it) }
-                    lpRunnable = null
-                    hideLongPress()
-                }
-            }
-            true
-        }
-    }
-
-    private fun showLongPress(v: View, chars: List<String>) {
-        if (!::overlay.isInitialized || chars.isEmpty()) return
-        val shown = ArrayList<String>()
-        for (c in chars) {
-            shown.add(if (shift && c.length == 1 && c[0].isLetter()) c.uppercase(tr) else c)
-        }
-        lpShown = true
-        lpChars = shown
-        lpSel = -1
-        overlay.removeAllViews()
-        lpViews.clear()
-        val cell = dp(44)
-        val h = dp(52)
-        val box = LinearLayout(this)
-        box.orientation = LinearLayout.HORIZONTAL
-        val bg = GradientDrawable()
-        bg.setColor(keyColor)
-        bg.cornerRadius = dp(8).toFloat()
-        bg.setStroke(dp(1), subColor)
-        box.background = bg
-        for (c in shown) {
-            val t = TextView(this)
-            t.text = c
-            t.textSize = 22f * tScale
-            t.gravity = Gravity.CENTER
-            t.setTextColor(textColor)
-            box.addView(t, LinearLayout.LayoutParams(cell, h))
-            lpViews.add(t)
-        }
-        val loc = IntArray(2)
-        v.getLocationOnScreen(loc)
-        val oloc = IntArray(2)
-        overlay.getLocationOnScreen(oloc)
-        val width = cell * shown.size
-        var x = loc[0] - oloc[0]
-        val maxX = overlay.width - width
-        if (x > maxX) x = maxX
-        if (x < 0) x = 0
-        var y = loc[1] - oloc[1] - h - dp(6)
-        if (y < 0) y = 0
-        val params = FrameLayout.LayoutParams(width, h)
-        params.leftMargin = x
-        params.topMargin = y
-        overlay.addView(box, params)
-        lpLeft = oloc[0] + x
-        lpCell = cell
-        updateLongPress(lpX)
-    }
-
-    private fun updateLongPress(rawX: Float) {
-        if (lpChars.isEmpty() || lpCell <= 0) return
-        var i = ((rawX - lpLeft) / lpCell).toInt()
-        if (rawX < lpLeft) i = 0
-        if (i < 0) i = 0
-        if (i >= lpChars.size) i = lpChars.size - 1
-        lpSel = i
-        for ((k, t) in lpViews.withIndex()) {
-            if (k == i) {
-                t.setBackgroundColor(accent)
-                t.setTextColor(bgColor)
-            } else {
-                t.setBackgroundColor(Color.TRANSPARENT)
-                t.setTextColor(textColor)
+                v.performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
             }
         }
     }
 
-    private fun hideLongPress() {
-        lpShown = false
-        lpSel = -1
-        if (::overlay.isInitialized) overlay.removeAllViews()
-    }
-
-    private fun registerWord(w: String) {
-        if (!learnOn) return
-        val lw = w.lowercase(tr)
-        if (lw.isEmpty()) return
-        learn(lastWord, lw)
-        lastWord = lw
-    }
-
-    private fun learn(prev: String, next: String) {
-        if (next.isEmpty()) return
-        val m = bigram.getOrPut(prev) { HashMap() }
-        m[next] = (m[next] ?: 0) + 1
-        bigramDirty++
-        if (bigramDirty >= 15) saveBigrams()
-    }
-
-    private fun topNext(prev: String): List<String> {
-        val m = bigram[prev] ?: return emptyList()
-        return m.entries.sortedByDescending { it.value }.take(6).map { it.key }
-    }
-
-    private fun refreshNext() {
-        if (!nextOn || !learnOn || digits.isNotEmpty() || pendingActive) {
-            nextWords = emptyList()
-            renderBar()
-            return
-        }
-        if (lastWord.isEmpty()) {
-            val before = currentInputConnection?.getTextBeforeCursor(3, 0)?.toString() ?: ""
-            val atStart = before.isBlank() || before.endsWith(". ") ||
-                before.endsWith("! ") || before.endsWith("? ") || before.endsWith("\n")
-            nextWords = if (atStart) topNext("") else emptyList()
-        } else {
-            nextWords = topNext(lastWord)
-        }
-        renderBar()
-    }
-
-    private fun seedBigrams() {
-        val seeds = listOf(
-            ": merhaba selam evet tamam ben bu günaydın hayır",
-            "merhaba: nasılsın nasılsınız arkadaşım canım",
-            "selam: nasılsın canım",
-            "günaydın: nasılsın canım herkese",
-            "nasılsın: iyi misin canım",
-            "iyi: günler akşamlar geceler misin",
-            "teşekkür: ederim ederiz",
-            "çok: teşekkürler güzel iyi sevindim",
-            "tamam: tamamdır olur canım",
-            "evet: tabii tabi doğru",
-            "hayır: olmaz değil",
-            "bir: şey şekilde dakika süre",
-            "ne: zaman kadar oldu yapıyorsun",
-            "nasıl: bir yapıyorsun gidiyor",
-            "geçmiş: olsun",
-            "görüşürüz: canım",
-            "hoş: geldin geldiniz",
-            "ben: de geliyorum bir",
-            "sen: de nerede",
-            "bu: gün akşam sabah",
-            "şimdi: geliyorum yazıyorum",
-            "lütfen: bana",
-            "nerede: sin",
-            "bugün: çok",
-            "yarın: görüşürüz"
-        )
-        for (line in seeds) {
-            val i = line.indexOf(':')
-            if (i < 0) continue
-            val prev = line.substring(0, i).trim()
-            val nexts = line.substring(i + 1).trim().split(" ").filter { it.isNotEmpty() }
-            val m = bigram.getOrPut(prev) { HashMap() }
-            for ((k, n) in nexts.withIndex()) {
-                m[n] = (m[n] ?: 0) + (nexts.size - k) * 2
-            }
-        }
-    }
-
-    private fun loadBigrams() {
-        val f = File(filesDir, "bigram.txt")
-        var ok = false
-        try {
-            if (f.exists()) {
-                f.forEachLine { line ->
-                    val p = line.split("\t")
-                    if (p.size == 3) {
-                        val c = p[2].toIntOrNull() ?: 0
-                        if (c > 0) {
-                            bigram.getOrPut(p[0]) { HashMap() }[p[1]] = c
-                            ok = true
-                        }
-                    }
-                }
-            }
-        } catch (e: Exception) {
-        }
-        if (!ok) seedBigrams()
-    }
-
-    private fun saveBigrams() {
-        bigramDirty = 0
-        try {
-            val sb = StringBuilder()
-            for ((p, m) in bigram) {
-                for ((n, c) in m) {
-                    sb.append(p).append('\t').append(n).append('\t').append(c).append('\n')
-                }
-            }
-            File(filesDir, "bigram.txt").writeText(sb.toString())
-        } catch (e: Exception) {
-        }
-    }
-
+    // ---------- Arayüz yardımcıları ----------
     private fun dp(v: Int) = (v * resources.displayMetrics.density).toInt()
-
-    private fun sc(v: Int) = dp((v * hScale).toInt())
 
     private fun lp(w: Int, h: Int, weight: Float) =
         LinearLayout.LayoutParams(w, h, weight).apply {
@@ -994,7 +757,7 @@ class T9Service : InputMethodService() {
         if (sub != null) {
             val start = main.length + 1
             sp.setSpan(RelativeSizeSpan(0.55f), start, text.length, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
-            sp.setSpan(ForegroundColorSpan(subColor), start, text.length, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+            sp.setSpan(ForegroundColorSpan(Color.GRAY), start, text.length, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
         }
         return sp
     }
@@ -1004,27 +767,14 @@ class T9Service : InputMethodService() {
     ): TextView {
         val tv = TextView(this)
         tv.text = label(main, sub)
-        tv.setTextColor(textColor)
-        tv.textSize = size * tScale
+        tv.setTextColor(txt)
+        tv.textSize = size * fontScale
         tv.gravity = Gravity.CENTER
         tv.background = keyBg()
         tv.setOnClickListener {
-            feedback()
+            feedback(tv)
             action()
         }
-        return tv
-    }
-
-    private fun makeT9Key(d: Char, lab: String): TextView {
-        val tv = makeKey(lab, d.toString(), 20f) { }
-        val chars = ArrayList<String>()
-        if (d == '1') {
-            chars.addAll(listOf("@", ".", ",", "?", "!", "1"))
-        } else {
-            for (c in (keyMap[d] ?: "")) chars.add(c.toString())
-            chars.add(d.toString())
-        }
-        attachLongPress(tv, chars, { onDigit(d) }, { s -> commitLiteral(s) })
         return tv
     }
 
@@ -1034,7 +784,7 @@ class T9Service : InputMethodService() {
             when (ev.action) {
                 MotionEvent.ACTION_DOWN -> {
                     v.isPressed = true
-                    feedback()
+                    feedback(v)
                     onBackspace()
                     repeatCount = 0
                     handler.removeCallbacks(repeatRunnable)
@@ -1050,242 +800,343 @@ class T9Service : InputMethodService() {
         return tv
     }
 
-    private fun chip(text: String, color: Int): TextView {
-        val tv = TextView(this)
-        tv.text = text
-        tv.textSize = 18f * tScale
-        tv.setPadding(dp(14), 0, dp(14), 0)
-        tv.gravity = Gravity.CENTER_VERTICAL
-        tv.setTextColor(color)
-        return tv
+    private fun hLayout(): LinearLayout {
+        val l = LinearLayout(this)
+        l.orientation = LinearLayout.HORIZONTAL
+        return l
     }
 
+    private fun vLayout(): LinearLayout {
+        val l = LinearLayout(this)
+        l.orientation = LinearLayout.VERTICAL
+        return l
+    }
+
+    private fun spacer(weight: Float): View {
+        val v = View(this)
+        v.layoutParams = lp(0, MATCH, weight)
+        return v
+    }
+
+    // ---------- Öneri çubuğu ----------
     private fun renderBar() {
         if (!::candidateBar.isInitialized) return
         candidateBar.removeAllViews()
-
-        if (t9On && digits.isNotEmpty()) {
-            val lastDigit = digits.last()
-            val chips = ArrayList<String>()
-            chips.add(lastDigit.toString())
-            for (ch in (keyMap[lastDigit] ?: "")) {
-                chips.add(if (shift) ch.toString().uppercase(tr) else ch.toString())
-            }
-            for (s in chips) {
-                val tv = chip(s, accent)
-                tv.background = keyBg()
-                tv.setOnClickListener {
-                    feedback()
-                    commitChip(s)
+        if (t9On && digits.length == 1 && tapMap.containsKey(digits[0]) && digits[0] != '1') {
+            val d = digits[0]
+            val opts = ArrayList<String>()
+            for (c in tapMap[d]!!) opts.add(if (shift) c.toString().uppercase(tr) else c.toString())
+            opts.add(d.toString())
+            for (o in opts) {
+                val chip = TextView(this)
+                chip.text = o
+                chip.textSize = 19f * fontScale
+                chip.setTextColor(txt)
+                chip.gravity = Gravity.CENTER
+                val cb = GradientDrawable()
+                cb.setColor(keyPressedColor)
+                cb.cornerRadius = dp(8).toFloat()
+                chip.background = cb
+                chip.setPadding(dp(11), 0, dp(11), 0)
+                chip.setOnClickListener {
+                    feedback(chip)
+                    pickFirstLetter(o)
                 }
-                val p = LinearLayout.LayoutParams(WRAP, MATCH)
-                p.setMargins(dp(3), dp(4), dp(3), dp(4))
-                candidateBar.addView(tv, p)
+                val clp = LinearLayout.LayoutParams(WRAP, MATCH)
+                clp.setMargins(dp(2), dp(5), dp(2), dp(5))
+                candidateBar.addView(chip, clp)
             }
+            val sep = View(this)
+            sep.setBackgroundColor(keyPressedColor)
+            val slp = LinearLayout.LayoutParams(dp(1), dp(26))
+            slp.gravity = Gravity.CENTER_VERTICAL
+            slp.setMargins(dp(8), 0, dp(4), 0)
+            candidateBar.addView(sep, slp)
         }
-
-        if (digits.isNotEmpty()) {
+        if (candidates.isNotEmpty()) {
             candidates.forEachIndexed { i, w ->
-                val tv = chip(if (shift) cap(w) else w, if (i == index) accent else textColor)
+                val tv = TextView(this)
+                tv.text = styled(w)
+                tv.textSize = 18f * fontScale
+                tv.setPadding(dp(14), 0, dp(14), 0)
+                tv.gravity = Gravity.CENTER_VERTICAL
+                tv.setTextColor(if (i == index) teal else txt)
                 tv.setOnClickListener {
-                    feedback()
                     index = i
                     commitWord(" ")
-                    refreshNext()
                     autoCapSoon()
                 }
                 candidateBar.addView(tv, LinearLayout.LayoutParams(WRAP, MATCH))
             }
-        } else {
+        } else if (digits.isEmpty() && !pendingActive) {
             for (w in nextWords) {
-                val tv = chip(if (shift) cap(w) else w, textColor)
+                val shown = styled(w)
+                val tv = TextView(this)
+                tv.text = shown
+                tv.textSize = 18f * fontScale
+                tv.setPadding(dp(14), 0, dp(14), 0)
+                tv.gravity = Gravity.CENTER_VERTICAL
+                tv.setTextColor(txt)
                 tv.setOnClickListener {
-                    feedback()
-                    commitNext(w)
+                    currentInputConnection?.commitText("$shown ", 1)
+                    resetShift()
+                    nextWords = emptyList()
+                    renderBar()
+                    autoCapSoon()
                 }
                 candidateBar.addView(tv, LinearLayout.LayoutParams(WRAP, MATCH))
             }
         }
     }
 
-    override fun onCreateInputView(): View {
-        val root = LinearLayout(this)
-        root.orientation = LinearLayout.VERTICAL
-        root.setBackgroundColor(bgColor)
-        root.setPadding(dp(4), dp(4), dp(4), dp(8))
-
-        val top = LinearLayout(this)
-        top.orientation = LinearLayout.HORIZONTAL
-        top.addView(makeKey("📋", null, 18f) { togglePano() }, lp(dp(48), MATCH, 0f))
-        candidateBar = LinearLayout(this)
-        candidateBar.orientation = LinearLayout.HORIZONTAL
-        val scroll = HorizontalScrollView(this)
-        scroll.isHorizontalScrollBarEnabled = false
-        scroll.addView(candidateBar)
-        top.addView(scroll, LinearLayout.LayoutParams(0, MATCH, 1f))
-        top.addView(makeKey("⚙", null, 18f) { openSettings() }, lp(dp(40), MATCH, 0f))
-        root.addView(top, LinearLayout.LayoutParams(MATCH, sc(44)))
-
-        mainArea = LinearLayout(this)
-        mainArea.orientation = LinearLayout.HORIZONTAL
-
-        val left = LinearLayout(this)
-        left.orientation = LinearLayout.VERTICAL
-        for (p in listOf("!", "?", "'", "~")) {
-            left.addView(makeKey(p, null) { punct(p) }, lp(MATCH, 0, 1f))
+    // ---------- Panellerin kurulumu ----------
+    private fun digitKey(d: Char, main: String): TextView {
+        val k = makeKey(main, d.toString(), 22f) { onDigit(d) }
+        // Uzun basınca rakamın kendisi yazılır
+        k.setOnLongClickListener {
+            feedback(k)
+            pickChar(d.toString())
+            true
         }
-        mainArea.addView(left, LinearLayout.LayoutParams(0, MATCH, 0.6f))
+        return k
+    }
 
-        val grid = LinearLayout(this)
-        grid.orientation = LinearLayout.VERTICAL
-        val rows = listOf(listOf('1', '2', '3'), listOf('4', '5', '6'), listOf('7', '8', '9'))
-        for (r in rows) {
-            val row = LinearLayout(this)
-            row.orientation = LinearLayout.HORIZONTAL
-            for (d in r) {
-                val lab = if (d == '1') "@" else keyMap[d]!!
-                row.addView(makeT9Key(d, lab), lp(0, MATCH, 1f))
-            }
-            grid.addView(row, LinearLayout.LayoutParams(MATCH, 0, 1f))
+    // ---------- İlk tuşta harf seçenekleri ----------
+    private fun pickFirstLetter(o: String) {
+        // Bekleyen T9 kelimesini iptal edip seçilen harfi yazar
+        digits = ""
+        candidates = emptyList()
+        index = 0
+        currentInputConnection?.commitText(o, 1)
+        if (o.length == 1 && o[0].isLetter()) {
+            manualWord.append(o.lowercase(tr))
+        } else {
+            finishManualWord()
         }
-        mainArea.addView(grid, LinearLayout.LayoutParams(0, MATCH, 3f))
+        resetShift()
+        nextWords = emptyList()
+        renderBar()
+        autoCapSoon()
+    }
 
-        val right = LinearLayout(this)
-        right.orientation = LinearLayout.VERTICAL
+    private fun pickChar(o: String) {
+        commitAll()
+        currentInputConnection?.commitText(o, 1)
+        if (o.length == 1 && o[0].isLetter()) {
+            manualWord.append(o.lowercase(tr))
+        } else {
+            finishManualWord()
+        }
+        resetShift()
+        nextWords = emptyList()
+        renderBar()
+        autoCapSoon()
+    }
+
+    private fun buildMain(): LinearLayout {
+        val a = hLayout()
+
+        val left = vLayout()
+        for (s in listOf("!", "?", "'", "~")) {
+            left.addView(makeKey(s, null, 20f) { punct(s) }, lp(MATCH, 0, 1f))
+        }
+        a.addView(left, lp(0, MATCH, 0.6f))
+
+        val grid = vLayout()
+
+        val r1 = hLayout()
+        r1.addView(digitKey('1', "@"), lp(0, MATCH, 1f))
+        r1.addView(digitKey('2', "abcç"), lp(0, MATCH, 1f))
+        r1.addView(digitKey('3', "def"), lp(0, MATCH, 1f))
+        grid.addView(r1, lp(MATCH, 0, 1f))
+
+        val r2 = hLayout()
+        r2.addView(digitKey('4', "ghıiğ"), lp(0, MATCH, 1f))
+        r2.addView(digitKey('5', "jkl"), lp(0, MATCH, 1f))
+        r2.addView(digitKey('6', "mnoö"), lp(0, MATCH, 1f))
+        grid.addView(r2, lp(MATCH, 0, 1f))
+
+        val r3 = hLayout()
+        r3.addView(digitKey('7', "pqrsş"), lp(0, MATCH, 1f))
+        r3.addView(digitKey('8', "tuüv"), lp(0, MATCH, 1f))
+        r3.addView(digitKey('9', "wxyz"), lp(0, MATCH, 1f))
+        grid.addView(r3, lp(MATCH, 0, 1f))
+
+        a.addView(grid, lp(0, MATCH, 3f))
+
+        // Sağ sütun: soldakiyle aynı genişlikte
+        val right = vLayout()
         right.addView(makeBackspaceKey(), lp(MATCH, 0, 1f))
-        right.addView(makeKey("Sonraki", "0", 13f) { onNext() }, lp(MATCH, 0, 1f))
-        shiftKey = makeKey("⇧", null, 24f) { toggleShift() }
+        right.addView(makeKey("Sonraki", "0", 11f) { onNext() }, lp(MATCH, 0, 1f))
+        shiftKey = makeKey("⇧", null, 26f) { toggleShift() }
+        shiftKey.setOnLongClickListener {
+            autoShift = false
+            capsLock = true
+            setShift(true)
+            if (digits.isNotEmpty()) showComposing()
+            renderBar()
+            true
+        }
         right.addView(shiftKey, lp(MATCH, 0, 1f))
-        mainArea.addView(right, LinearLayout.LayoutParams(0, MATCH, 1f))
-        root.addView(mainArea, LinearLayout.LayoutParams(MATCH, sc(176)))
+        a.addView(right, lp(0, MATCH, 0.6f))
+        return a
+    }
 
-        symbolArea = LinearLayout(this)
-        symbolArea.orientation = LinearLayout.HORIZONTAL
-        val sScroll = ScrollView(this)
-        val box = LinearLayout(this)
-        box.orientation = LinearLayout.VERTICAL
-        val simgeler = "1234567890*\"':;!?/)(+-&_₺#@£€\$¢~`|•√π÷×§∆\\}{=°%©®™✓[]<>^"
-        var srow = LinearLayout(this)
-        for ((i, ch) in simgeler.withIndex()) {
-            if (i % 10 == 0) {
-                srow = LinearLayout(this)
-                srow.orientation = LinearLayout.HORIZONTAL
-                srow.weightSum = 10f
-                box.addView(srow, LinearLayout.LayoutParams(MATCH, sc(44)))
+    private fun symbolRow(items: String, size: Float, fill: Int): LinearLayout {
+        val r = hLayout()
+        val list = items.split(" ").filter { it.isNotEmpty() }
+        for (s in list) r.addView(makeKey(s, null, size) { punct(s) }, lp(0, MATCH, 1f))
+        for (i in list.size until fill) r.addView(spacer(1f))
+        return r
+    }
+
+    private fun buildSymbols(): LinearLayout {
+        val a = hLayout()
+        val grid = vLayout()
+        grid.addView(symbolRow("+ - & _ ₺ # @ £ € $", 18f, 10), lp(MATCH, 0, 1f))
+        grid.addView(symbolRow("¢ ~ ` | • √ π ÷ × §", 18f, 10), lp(MATCH, 0, 1f))
+        grid.addView(symbolRow("∆ \\ } { = ° % © ® ™", 18f, 10), lp(MATCH, 0, 1f))
+        grid.addView(symbolRow("✓ [ ] < > ^", 18f, 10), lp(MATCH, 0, 1f))
+        a.addView(grid, lp(0, MATCH, 8.5f))
+
+        val right = vLayout()
+        right.addView(makeBackspaceKey(), lp(MATCH, 0, 1f))
+        right.addView(makeKey("😀", null, 22f) { commitAll(); showPanel(3) }, lp(MATCH, 0, 1f))
+        right.addView(makeKey("123", null, 20f) { commitAll(); showPanel(2) }, lp(MATCH, 0, 1f))
+        a.addView(right, lp(0, MATCH, 1.5f))
+        return a
+    }
+
+    private fun buildNumbers(): LinearLayout {
+        val a = hLayout()
+        fun numKey(s: String, size: Float) = makeKey(s, null, size) { punct(s) }
+
+        val left = vLayout()
+        for (s in listOf("+", "-", "*", "/")) left.addView(numKey(s, 24f), lp(MATCH, 0, 1f))
+        a.addView(left, lp(0, MATCH, 1f))
+
+        val grid = vLayout()
+        for (row in listOf("123", "456", "789")) {
+            val r = hLayout()
+            for (ch in row) r.addView(numKey(ch.toString(), 32f), lp(0, MATCH, 1f))
+            grid.addView(r, lp(MATCH, 0, 1f))
+        }
+        a.addView(grid, lp(0, MATCH, 4.5f))
+
+        val right = vLayout()
+        right.addView(numKey("%", 24f), lp(MATCH, 0, 1f))
+        right.addView(numKey("=", 24f), lp(MATCH, 0, 1f))
+        right.addView(makeBackspaceKey(), lp(MATCH, 0, 1f))
+        right.addView(makeKey("!?#", null, 18f) { commitAll(); showPanel(1) }, lp(MATCH, 0, 1f))
+        a.addView(right, lp(0, MATCH, 1f))
+        return a
+    }
+
+    private fun buildEmoji(): LinearLayout {
+        val a = hLayout()
+        val sv = ScrollView(this)
+        val col = vLayout()
+        val list = EMOJIS.split(" ").filter { it.isNotEmpty() }
+        var i = 0
+        while (i < list.size) {
+            val row = hLayout()
+            for (j in 0 until 8) {
+                val e = list.getOrNull(i + j)
+                val tv = TextView(this)
+                tv.gravity = Gravity.CENTER
+                tv.textSize = 24f
+                if (e != null) {
+                    tv.text = e
+                    tv.setOnClickListener { punct(e) }
+                }
+                row.addView(tv, LinearLayout.LayoutParams(0, dp(48), 1f))
             }
-            val s = ch.toString()
-            srow.addView(makeKey(s, null, 18f) { punct(s) }, lp(0, MATCH, 1f))
+            col.addView(row, LinearLayout.LayoutParams(MATCH, WRAP))
+            i += 8
         }
-        sScroll.addView(box)
-        symbolArea.addView(sScroll, LinearLayout.LayoutParams(0, MATCH, 6f))
-        val sRight = LinearLayout(this)
-        sRight.orientation = LinearLayout.VERTICAL
-        sRight.addView(makeBackspaceKey(), lp(MATCH, 0, 1f))
-        sRight.addView(makeKey("😀", null, 22f) { showPanel(3) }, lp(MATCH, 0, 1f))
-        sRight.addView(makeKey("123", null, 18f) { showPanel(2) }, lp(MATCH, 0, 1f))
-        symbolArea.addView(sRight, LinearLayout.LayoutParams(0, MATCH, 1f))
-        root.addView(symbolArea, LinearLayout.LayoutParams(MATCH, sc(176)))
+        sv.addView(col)
+        a.addView(sv, lp(0, MATCH, 8f))
 
-        numArea = LinearLayout(this)
-        numArea.orientation = LinearLayout.HORIZONTAL
-        val nLeft = LinearLayout(this)
-        nLeft.orientation = LinearLayout.VERTICAL
-        for (p in listOf("+", "-", "*", "/")) {
-            nLeft.addView(makeKey(p, null, 22f) { punct(p) }, lp(MATCH, 0, 1f))
-        }
-        numArea.addView(nLeft, LinearLayout.LayoutParams(0, MATCH, 0.7f))
-        val nGrid = LinearLayout(this)
-        nGrid.orientation = LinearLayout.VERTICAL
-        val nrows = listOf(
-            listOf("1", "2", "3"), listOf("4", "5", "6"),
-            listOf("7", "8", "9"), listOf(",", "0", ".")
-        )
-        for (r in nrows) {
-            val nrow = LinearLayout(this)
-            nrow.orientation = LinearLayout.HORIZONTAL
-            for (s in r) {
-                nrow.addView(makeKey(s, null, 24f) { punct(s) }, lp(0, MATCH, 1f))
-            }
-            nGrid.addView(nrow, LinearLayout.LayoutParams(MATCH, 0, 1f))
-        }
-        numArea.addView(nGrid, LinearLayout.LayoutParams(0, MATCH, 3f))
-        val nRight = LinearLayout(this)
-        nRight.orientation = LinearLayout.VERTICAL
-        nRight.addView(makeKey("%", null, 22f) { punct("%") }, lp(MATCH, 0, 1f))
-        nRight.addView(makeKey("=", null, 22f) { punct("=") }, lp(MATCH, 0, 1f))
-        nRight.addView(makeBackspaceKey(), lp(MATCH, 0, 1f))
-        nRight.addView(makeKey("!?#", null, 16f) { showPanel(1) }, lp(MATCH, 0, 1f))
-        numArea.addView(nRight, LinearLayout.LayoutParams(0, MATCH, 1f))
-        root.addView(numArea, LinearLayout.LayoutParams(MATCH, sc(176)))
+        val right = vLayout()
+        right.addView(makeBackspaceKey(), lp(MATCH, 0, 1f))
+        right.addView(makeKey("!?#", null, 18f) { commitAll(); showPanel(1) }, lp(MATCH, 0, 1f))
+        right.addView(makeKey("123", null, 20f) { commitAll(); showPanel(2) }, lp(MATCH, 0, 1f))
+        a.addView(right, lp(0, MATCH, 1.5f))
+        return a
+    }
 
-        emojiArea = LinearLayout(this)
-        emojiArea.orientation = LinearLayout.HORIZONTAL
-        val eScroll = ScrollView(this)
-        val eBox = LinearLayout(this)
-        eBox.orientation = LinearLayout.VERTICAL
-        val emojiler = ("😀 😃 😄 😁 😆 😅 😂 🤣 🙂 🙃 😉 😊 😇 🥰 😍 🤩 😘 😋 😛 😜 🤪 🤗 🤭 🤔 " +
-            "😐 😑 😶 😏 😒 🙄 😬 😌 😔 😪 😴 😷 🤒 🥵 🥶 😵 🤯 🤠 😎 🤓 😕 😟 🙁 😮 😲 😳 🥺 " +
-            "😨 😰 😥 😢 😭 😱 😖 😞 😓 😩 😫 🥱 😤 😡 😠 🤬 😈 💀 💩 🤡 👻 👽 🤖 " +
-            "👍 👎 👌 ✌️ 🤞 🤟 🤘 🤙 👈 👉 👆 👇 ☝️ ✋ 👋 👏 🙌 🤝 🙏 💪 " +
-            "❤️ 🧡 💛 💚 💙 💜 🖤 🤍 💔 💕 💞 💓 💗 💖 💘 💝 " +
-            "🔥 ✨ ⭐ 🌟 💥 💫 💦 🎉 🎊 🎁 🎂 🎈 🌹 🌸 🌞 🌙 ☀️ ❄️ 🌈 ☕ 🍕 🍔 🍟 🍰 🍎 🍌 🍉 🍺 " +
-            "⚽ 🏀 🎵 🎶 📱 💻 📷 🎮 🚗 ✈️ 🏠 💰 💯 ✅ ❌ ⚠️ ❓ ❗ 🇹🇷").split(" ")
-        var erow = LinearLayout(this)
-        for ((i, em) in emojiler.withIndex()) {
-            if (i % 8 == 0) {
-                erow = LinearLayout(this)
-                erow.orientation = LinearLayout.HORIZONTAL
-                erow.weightSum = 8f
-                eBox.addView(erow, LinearLayout.LayoutParams(MATCH, sc(46)))
-            }
-            erow.addView(makeKey(em, null, 22f) { punct(em) }, lp(0, MATCH, 1f))
-        }
-        eScroll.addView(eBox)
-        emojiArea.addView(eScroll, LinearLayout.LayoutParams(0, MATCH, 6f))
-        val eRight = LinearLayout(this)
-        eRight.orientation = LinearLayout.VERTICAL
-        eRight.addView(makeBackspaceKey(), lp(MATCH, 0, 1f))
-        eRight.addView(makeKey("!?#", null, 16f) { showPanel(1) }, lp(MATCH, 0, 1f))
-        eRight.addView(makeKey("123", null, 18f) { showPanel(2) }, lp(MATCH, 0, 1f))
-        emojiArea.addView(eRight, LinearLayout.LayoutParams(0, MATCH, 1f))
-        root.addView(emojiArea, LinearLayout.LayoutParams(MATCH, sc(176)))
+    private fun buildClip(): LinearLayout {
+        val a = vLayout()
+        val actions = hLayout()
+        actions.addView(makeKey("Tümü", null, 14f) { doAction(android.R.id.selectAll) }, lp(0, MATCH, 1f))
+        actions.addView(makeKey("Kes", null, 14f) { doAction(android.R.id.cut) }, lp(0, MATCH, 1f))
+        actions.addView(makeKey("Kopyala", null, 14f) { doAction(android.R.id.copy) }, lp(0, MATCH, 1f))
+        actions.addView(makeKey("Yapıştır", null, 14f) { doAction(android.R.id.paste) }, lp(0, MATCH, 1f))
+        a.addView(actions, lp(MATCH, dp(44), 0f))
 
-        clipArea = LinearLayout(this)
-        clipArea.orientation = LinearLayout.VERTICAL
-        val actions = LinearLayout(this)
-        actions.orientation = LinearLayout.HORIZONTAL
-        actions.addView(makeKey("Tümünü seç", null, 12f) { doAction(android.R.id.selectAll) }, lp(0, MATCH, 1.4f))
-        actions.addView(makeKey("Kes", null, 13f) { doAction(android.R.id.cut) }, lp(0, MATCH, 1f))
-        actions.addView(makeKey("Kopyala", null, 13f) { doAction(android.R.id.copy) }, lp(0, MATCH, 1.2f))
-        actions.addView(makeKey("Yapıştır", null, 13f) { doAction(android.R.id.paste) }, lp(0, MATCH, 1.3f))
-        actions.addView(makeBackspaceKey(), lp(0, MATCH, 0.9f))
-        clipArea.addView(actions, LinearLayout.LayoutParams(MATCH, sc(44)))
-        val cScroll = ScrollView(this)
-        clipList = LinearLayout(this)
-        clipList.orientation = LinearLayout.VERTICAL
-        cScroll.addView(clipList)
-        clipArea.addView(cScroll, LinearLayout.LayoutParams(MATCH, 0, 1f))
-        root.addView(clipArea, LinearLayout.LayoutParams(MATCH, sc(176)))
+        val sv = ScrollView(this)
+        clipList = vLayout()
+        sv.addView(clipList)
+        a.addView(sv, lp(MATCH, 0, 1f))
+        return a
+    }
 
-        val bottom = LinearLayout(this)
-        bottom.orientation = LinearLayout.HORIZONTAL
-        modeKey = makeKey("12#", null, 16f) { toggleMode() }
-        bottom.addView(modeKey, lp(0, MATCH, 1f))
-        t9Key = makeKey("T9", if (t9On) "açık" else "kapalı", 15f) { toggleT9() }
-        t9Key.setTextColor(if (t9On) accent else textColor)
-        bottom.addView(t9Key, lp(0, MATCH, 1f))
-        bottom.addView(makeKey(",", null) { punct(",") }, lp(0, MATCH, 0.7f))
-        bottom.addView(makeKey("Türkçe", null, 14f) { punct(" ") }, lp(0, MATCH, 3f))
-        bottom.addView(makeKey(".", null) { punct(".") }, lp(0, MATCH, 0.7f))
-        bottom.addView(makeKey("↵", null, 22f) { onEnter() }, lp(0, MATCH, 1.2f))
-        root.addView(bottom, LinearLayout.LayoutParams(MATCH, sc(52)))
+    override fun onCreateInputView(): View {
+        loadPrefs()
+        val root = vLayout()
+        root.setBackgroundColor(rootColor)
+        root.setPadding(dp(2), dp(2), dp(2), dp(2))
 
+        // Üst satır: pano düğmesi + öneri çubuğu
+        val top = hLayout()
+        top.addView(makeKey("📋", null, 20f) { togglePano() }, lp(dp(56), MATCH, 0f))
+        val hs = HorizontalScrollView(this)
+        hs.isHorizontalScrollBarEnabled = false
+        candidateBar = hLayout()
+        hs.addView(candidateBar)
+        top.addView(hs, LinearLayout.LayoutParams(0, MATCH, 1f))
+        top.addView(makeKey("⚙", null, 20f) { openSettings() }, lp(dp(56), MATCH, 0f))
+        root.addView(top, LinearLayout.LayoutParams(MATCH, dp((48 * heightScale).toInt())))
+
+        // Orta alan: paneller
+        mainArea = buildMain()
+        symbolArea = buildSymbols()
+        numArea = buildNumbers()
+        emojiArea = buildEmoji()
+        clipArea = buildClip()
         val frame = FrameLayout(this)
-        frame.addView(root, FrameLayout.LayoutParams(MATCH, WRAP))
-        overlay = FrameLayout(this)
-        frame.addView(overlay, FrameLayout.LayoutParams(MATCH, MATCH))
+        for (area in listOf(mainArea, symbolArea, numArea, emojiArea, clipArea)) {
+            frame.addView(area, FrameLayout.LayoutParams(MATCH, MATCH))
+        }
+        root.addView(frame, LinearLayout.LayoutParams(MATCH, dp((200 * heightScale).toInt())))
 
-        showPanel(panel)
-        return frame
+        // Alt satır
+        val bottom = hLayout()
+        modeKey = makeKey("12#", null, 18f) { toggleMode() }
+        t9Key = makeKey("T9", "açık", 20f) { toggleT9() }
+        t9Key.setTextColor(teal)
+        bottom.addView(modeKey, lp(0, MATCH, 1.2f))
+        bottom.addView(t9Key, lp(0, MATCH, 1.2f))
+        bottom.addView(makeKey(",", null, 22f) { punct(",") }, lp(0, MATCH, 0.8f))
+        spaceKey = makeKey("Türkçe", null, 16f) { }
+        spaceKey.setOnClickListener {
+            feedback(spaceKey)
+            if (panel == 2) punct("0") else onSpace()
+        }
+        spaceKey.setOnLongClickListener {
+            if (panel == 2) {
+                onSpace()
+                true
+            } else false
+        }
+        bottom.addView(spaceKey, lp(0, MATCH, 4f))
+        bottom.addView(makeKey(".", null, 22f) { punct(".") }, lp(0, MATCH, 0.8f))
+        bottom.addView(makeKey("↵", null, 22f) { onEnter() }, lp(0, MATCH, 1.2f))
+        root.addView(bottom, LinearLayout.LayoutParams(MATCH, dp((52 * heightScale).toInt())))
+
+        showPanel(0)
+        uiReady = true
+        renderBar()
+        return root
     }
 }
