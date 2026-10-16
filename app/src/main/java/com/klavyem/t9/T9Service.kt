@@ -967,7 +967,13 @@ class T9Service : InputMethodService() {
         // Sağ sütun: soldakiyle aynı genişlikte
         val right = vLayout()
         right.addView(makeBackspaceKey(), lp(MATCH, 0, 1f))
-        right.addView(makeKey("Sonraki", "0", 11f) { onNext() }, lp(MATCH, 0, 1f))
+        val nextKey = makeKey("Sonraki", "0", 11f) { onNext() }
+        nextKey.setOnLongClickListener {
+            feedback(nextKey)
+            pickChar("0")
+            true
+        }
+        right.addView(nextKey, lp(MATCH, 0, 1f))
         shiftKey = makeKey("⇧", null, 26f) { toggleShift() }
         shiftKey.setOnLongClickListener {
             autoShift = false
