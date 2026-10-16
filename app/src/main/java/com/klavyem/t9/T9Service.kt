@@ -81,11 +81,16 @@ class T9Service : InputMethodService() {
 
     private var userStamp = 0L
     private var popup: PopupWindow? = null
+    private var popupRow: View? = null
+    private var popupItems = ArrayList<TextView>()
+    private var hovered: TextView? = null
     private var digits = ""
     private var candidates: List<String> = emptyList()
     private var index = 0
     private var shift = false
     private var autoShift = false
+    private var capsLock = false
+    private var lastShiftTap = 0L
     private var autoCapAllowed = false
     private var t9On = true
     private var panel = 0
@@ -174,6 +179,7 @@ class T9Service : InputMethodService() {
         candidates = emptyList()
         nextWords = emptyList()
         index = 0
+        capsLock = false
         resetShift()
 
         val type = info?.inputType ?: 0
@@ -292,13 +298,19 @@ class T9Service : InputMethodService() {
     // ---------- Büyük harf ----------
     private fun setShift(on: Boolean) {
         shift = on
-        if (::shiftKey.isInitialized) shiftKey.setTextColor(if (on) teal else txt)
+        if (::shiftKey.isInitialized) {
+            shiftKey.setTextColor(if (on) teal else txt)
+            shiftKey.text = if (capsLock) "⇪" else "⇧"
+        }
     }
 
     private fun resetShift() {
         autoShift = false
-        setShift(false)
+        if (capsLock) setShift(true) else setShift(false)
     }
+
+    private fun styled(w: String): String =
+        if (capsLock) w.uppercase(tr) else if (shift) cap(w) else w
 
     private fun autoCapSoon() {
         handler.removeCallbacks(autoCapRunnable)
@@ -311,7 +323,7 @@ class T9Service : InputMethodService() {
         if (mode != 0) {
             autoShift = true
             setShift(true)
-        } else if (autoShift) {
+        } else if (autoShift && !capsLock) {
             autoShift = false
             setShift(false)
         }
@@ -324,7 +336,7 @@ class T9Service : InputMethodService() {
     private fun current(): String {
         if (candidates.isEmpty() || index >= candidates.size) return ""
         val w = candidates[index]
-        return if (shift) cap(w) else w
+        return styled(w)
     }
 
     private fun updateCandidates() {
@@ -517,8 +529,20 @@ class T9Service : InputMethodService() {
     }
 
     private fun toggleShift() {
+        val now = System.currentTimeMillis()
         autoShift = false
-        setShift(!shift)
+        if (capsLock) {
+            // Caps lock açıkken tek basış kapatır
+            capsLock = false
+            setShift(false)
+        } else if (shift && now - lastShiftTap < 400) {
+            // Hızlı iki basış: caps lock
+            capsLock = true
+            setShift(true)
+        } else {
+            setShift(!shift)
+        }
+        lastShiftTap = now
         if (digits.isNotEmpty()) showComposing()
         renderBar()
     }
@@ -808,7 +832,7 @@ class T9Service : InputMethodService() {
         if (candidates.isNotEmpty()) {
             candidates.forEachIndexed { i, w ->
                 val tv = TextView(this)
-                tv.text = if (shift) cap(w) else w
+                tv.text = styled(w)
                 tv.textSize = 18f * fontScale
                 tv.setPadding(dp(14), 0, dp(14), 0)
                 tv.gravity = Gravity.CENTER_VERTICAL
@@ -822,7 +846,7 @@ class T9Service : InputMethodService() {
             }
         } else if (digits.isEmpty() && !pendingActive) {
             for (w in nextWords) {
-                val shown = if (shift) cap(w) else w
+                val shown = styled(w)
                 val tv = TextView(this)
                 tv.text = shown
                 tv.textSize = 18f * fontScale
@@ -848,6 +872,21 @@ class T9Service : InputMethodService() {
             showPopup(k, d)
             true
         }
+        // Uzun basıp parmağı kaldırmadan menüye kayarak seçme
+        k.setOnTouchListener { _, ev ->
+            if (popup != null) {
+                if (ev.action == MotionEvent.ACTION_MOVE) {
+                    hoverAt(ev.rawX, ev.rawY)
+                } else if (ev.action == MotionEvent.ACTION_UP) {
+                    val h = hoverAt(ev.rawX, ev.rawY)
+                    if (h != null) {
+                        pickChar(h.text.toString())
+                        dismissPopup()
+                    }
+                }
+            }
+            false
+        }
         return k
     }
 
@@ -858,11 +897,39 @@ class T9Service : InputMethodService() {
         } catch (e: Exception) {
         }
         popup = null
+        popupRow = null
+        popupItems.clear()
+        hovered = null
+    }
+
+    private fun hoverAt(rx: Float, ry: Float): TextView? {
+        val row = popupRow ?: return null
+        val rl = IntArray(2)
+        row.getLocationOnScreen(rl)
+        var hit: TextView? = null
+        // Parmak menü hizasına ya da üstüne çıkmış olmalı
+        if (ry <= rl[1] + row.height + dp(6)) {
+            for (tv in popupItems) {
+                val l = IntArray(2)
+                tv.getLocationOnScreen(l)
+                if (rx >= l[0] && rx < l[0] + tv.width) {
+                    hit = tv
+                    break
+                }
+            }
+        }
+        if (hit !== hovered) {
+            hovered?.setBackgroundColor(Color.TRANSPARENT)
+            hit?.setBackgroundColor(teal)
+            hovered = hit
+        }
+        return hit
     }
 
     private fun showPopup(anchor: View, d: Char) {
         dismissPopup()
         val s = if (d == '1') ".,@?!'-" else (tapMap[d] ?: "")
+        val items = ArrayList<TextView>()
         val opts = ArrayList<String>()
         for (c in s) opts.add(if (shift) c.toString().uppercase(tr) else c.toString())
         opts.add(d.toString())
@@ -885,7 +952,10 @@ class T9Service : InputMethodService() {
                 dismissPopup()
             }
             row.addView(tv, LinearLayout.LayoutParams(WRAP, WRAP))
+            items.add(tv)
         }
+        popupRow = row
+        popupItems = items
         row.measure(
             View.MeasureSpec.makeMeasureSpec(0, View.MeasureSpec.UNSPECIFIED),
             View.MeasureSpec.makeMeasureSpec(0, View.MeasureSpec.UNSPECIFIED)
@@ -950,6 +1020,14 @@ class T9Service : InputMethodService() {
         right.addView(makeBackspaceKey(), lp(MATCH, 0, 1f))
         right.addView(makeKey("Sonraki", "0", 11f) { onNext() }, lp(MATCH, 0, 1f))
         shiftKey = makeKey("⇧", null, 26f) { toggleShift() }
+        shiftKey.setOnLongClickListener {
+            autoShift = false
+            capsLock = true
+            setShift(true)
+            if (digits.isNotEmpty()) showComposing()
+            renderBar()
+            true
+        }
         right.addView(shiftKey, lp(MATCH, 0, 1f))
         a.addView(right, lp(0, MATCH, 0.6f))
         return a
