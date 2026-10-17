@@ -6,10 +6,13 @@ import android.content.Context
 import android.content.Intent
 import android.content.SharedPreferences
 import android.graphics.Color
+import android.graphics.drawable.GradientDrawable
+import android.media.AudioManager
 import android.graphics.Typeface
 import android.net.Uri
 import android.os.Bundle
 import android.provider.Settings
+import android.view.Gravity
 import android.view.View
 import android.view.inputmethod.InputMethodManager
 import android.widget.Button
@@ -32,6 +35,16 @@ class SettingsActivity : Activity() {
     private lateinit var root: LinearLayout
     private lateinit var info: TextView
     private lateinit var countText: TextView
+    private lateinit var themeGroup: RadioGroup
+    private val themeIds = ArrayList<Int>()
+    private lateinit var previewRoot: LinearLayout
+    private val previewKeys = ArrayList<TextView>()
+    private val swatchSets = HashMap<String, ArrayList<View>>()
+    private val palette = listOf(
+        "#000000", "#1F2326", "#2D3235", "#4A5256", "#7A8288", "#C5CACD", "#FFFFFF", "#FFF8E1",
+        "#E1F5FE", "#E8F5E9", "#FCE4EC", "#EDE7F6", "#0D47A1", "#1565C0", "#00695C", "#26C6B0",
+        "#2E7D32", "#F9A825", "#E65100", "#B71C1C", "#880E4F", "#4A148C", "#3E2723", "#212121"
+    ).map { Color.parseColor(it) }
 
     private fun dp(v: Int) = (v * resources.displayMetrics.density).toInt()
     private fun userFile() = File(filesDir, "kullanici.txt")
@@ -76,7 +89,10 @@ class SettingsActivity : Activity() {
         )
     }
 
-    private fun radios(title: String, key: String, options: List<String>, def: Int) {
+    private fun radios(
+        title: String, key: String, options: List<String>, def: Int,
+        after: ((RadioGroup, List<Int>) -> Unit)? = null
+    ) {
         header(title)
         val g = RadioGroup(this)
         val ids = ArrayList<Int>()
@@ -94,6 +110,70 @@ class SettingsActivity : Activity() {
             if (idx >= 0) save { putInt(key, idx) }
         }
         root.addView(g)
+        after?.invoke(g, ids)
+    }
+
+    private fun customColor(key: String): Int = when (key) {
+        "ozelArka" -> prefs.getInt(key, Color.parseColor("#1F2326"))
+        "ozelTus" -> prefs.getInt(key, Color.parseColor("#2D3235"))
+        "ozelBasili" -> prefs.getInt(key, Color.parseColor("#4A5256"))
+        else -> prefs.getInt(key, Color.WHITE)
+    }
+
+    private fun updatePreview() {
+        previewRoot.setBackgroundColor(customColor("ozelArka"))
+        for (k in previewKeys) {
+            val g = GradientDrawable()
+            g.setColor(customColor("ozelTus"))
+            g.cornerRadius = dp(8).toFloat()
+            k.background = g
+            k.setTextColor(customColor("ozelYazi"))
+        }
+    }
+
+    private fun refreshSwatches(key: String) {
+        val cur = customColor(key)
+        val views = swatchSets[key] ?: return
+        views.forEachIndexed { i, v ->
+            val g = GradientDrawable()
+            g.setColor(palette[i])
+            g.cornerRadius = dp(6).toFloat()
+            g.setStroke(if (palette[i] == cur) dp(3) else dp(1), if (palette[i] == cur) Color.parseColor("#8D4B35") else Color.GRAY)
+            v.background = g
+        }
+    }
+
+    private fun colorRow(title: String, key: String) {
+        val t = TextView(this)
+        t.text = title
+        t.textSize = 17f
+        t.setPadding(0, dp(14), 0, dp(6))
+        root.addView(t)
+        val views = ArrayList<View>()
+        swatchSets[key] = views
+        var row: LinearLayout? = null
+        palette.forEachIndexed { i, c ->
+            if (i % 8 == 0) {
+                row = LinearLayout(this)
+                row!!.orientation = LinearLayout.HORIZONTAL
+                root.addView(row)
+            }
+            val v = View(this)
+            v.setOnClickListener {
+                save {
+                    putInt(key, c)
+                    putInt("tema", 3)
+                }
+                if (themeIds.size > 3) themeGroup.check(themeIds[3])
+                refreshSwatches(key)
+                updatePreview()
+            }
+            val lp = LinearLayout.LayoutParams(0, dp(38), 1f)
+            lp.setMargins(dp(2), dp(2), dp(2), dp(2))
+            row!!.addView(v, lp)
+            views.add(v)
+        }
+        refreshSwatches(key)
     }
 
     private fun toggle(label: String, key: String, def: Boolean) {
@@ -140,12 +220,76 @@ class SettingsActivity : Activity() {
                 .showInputMethodPicker()
         }
 
-        radios("Tema", "tema", listOf("Koyu", "Açık", "Tam siyah"), 0)
+        radios("Tema", "tema", listOf("Koyu", "Açık", "Tam siyah", "Özel (kendi renklerim)"), 0) { g, ids ->
+            themeGroup = g
+            themeIds.clear()
+            themeIds.addAll(ids)
+        }
+        header("Özel tema renkleri")
+        previewRoot = LinearLayout(this)
+        previewRoot.orientation = LinearLayout.HORIZONTAL
+        previewRoot.setPadding(dp(8), dp(8), dp(8), dp(8))
+        for (s in listOf("abc", "def", "ghi")) {
+            val k = TextView(this)
+            k.text = s
+            k.textSize = 22f
+            k.gravity = Gravity.CENTER
+            previewKeys.add(k)
+            val lp = LinearLayout.LayoutParams(0, dp(56), 1f)
+            lp.setMargins(dp(4), dp(4), dp(4), dp(4))
+            previewRoot.addView(k, lp)
+        }
+        root.addView(previewRoot)
+        colorRow("Klavye arka planı", "ozelArka")
+        colorRow("Tuş rengi", "ozelTus")
+        colorRow("Tuşa basılı rengi", "ozelBasili")
+        colorRow("Yazı rengi", "ozelYazi")
+        updatePreview()
+        button("Özel renkleri sıfırla (koyu temaya dön)") {
+            save {
+                remove("ozelArka")
+                remove("ozelTus")
+                remove("ozelBasili")
+                remove("ozelYazi")
+                putInt("tema", 0)
+            }
+            if (themeIds.isNotEmpty()) themeGroup.check(themeIds[0])
+            for (k in swatchSets.keys) refreshSwatches(k)
+            updatePreview()
+        }
         radios("Klavye yüksekliği", "yukseklik", listOf("Küçük", "Normal", "Büyük", "Çok büyük"), 1)
         radios("Yazı boyutu", "yazi", listOf("Küçük", "Normal", "Büyük", "Çok büyük"), 1)
 
         header("Ses ve titreşim")
         toggle("Tuş sesi (telefonun \"dokunma sesleri\" ayarı da açık olmalı)", "ses", true)
+        val volLabel = TextView(this)
+        volLabel.textSize = 16f
+        volLabel.setTextColor(Color.parseColor("#7A6A65"))
+        volLabel.setPadding(0, dp(10), 0, 0)
+        root.addView(volLabel)
+        val volSeek = SeekBar(this)
+        volSeek.max = 100
+        val vcur = prefs.getInt("sesSeviye", 40).coerceIn(0, 100)
+        volSeek.progress = vcur
+        volLabel.text = "Tuş sesi şiddeti: %" + vcur
+        volSeek.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+            override fun onProgressChanged(s: SeekBar?, p: Int, fromUser: Boolean) {
+                volLabel.text = "Tuş sesi şiddeti: %" + p
+            }
+
+            override fun onStartTrackingTouch(s: SeekBar?) {}
+            override fun onStopTrackingTouch(s: SeekBar?) {
+                val lvl = s?.progress ?: 40
+                save { putInt("sesSeviye", lvl) }
+                try {
+                    val am = getSystemService(Context.AUDIO_SERVICE) as AudioManager
+                    val f = lvl / 100f
+                    if (lvl > 0) am.playSoundEffect(AudioManager.FX_KEYPRESS_STANDARD, f * f)
+                } catch (e: Exception) {
+                }
+            }
+        })
+        root.addView(volSeek)
         toggle("Tuş titreşimi", "titresim", true)
         val vibLabel = TextView(this)
         vibLabel.textSize = 16f

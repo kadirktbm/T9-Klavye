@@ -8,6 +8,7 @@ import android.graphics.Color
 import android.graphics.drawable.GradientDrawable
 import android.graphics.drawable.StateListDrawable
 import android.inputmethodservice.InputMethodService
+import android.media.AudioManager
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
@@ -69,6 +70,7 @@ class T9Service : InputMethodService() {
     private var fontScale = 1f
     private var heightScale = 1f
     private var soundOn = true
+    private var soundVol = 0.16f
     private var vibOn = true
     private var vibMs = 18
     private var nextPref = true
@@ -1065,6 +1067,12 @@ class T9Service : InputMethodService() {
                 keyColor = Color.parseColor("#FFFFFF")
                 keyPressedColor = Color.parseColor("#C5CACD")
             }
+            3 -> {
+                txt = prefs.getInt("ozelYazi", Color.WHITE)
+                rootColor = prefs.getInt("ozelArka", Color.parseColor("#1F2326"))
+                keyColor = prefs.getInt("ozelTus", Color.parseColor("#2D3235"))
+                keyPressedColor = prefs.getInt("ozelBasili", Color.parseColor("#4A5256"))
+            }
             2 -> {
                 txt = Color.WHITE
                 rootColor = Color.BLACK
@@ -1081,7 +1089,9 @@ class T9Service : InputMethodService() {
         val scales = floatArrayOf(0.85f, 1f, 1.15f, 1.3f)
         heightScale = scales[prefs.getInt("yukseklik", 1).coerceIn(0, 3)]
         fontScale = scales[prefs.getInt("yazi", 1).coerceIn(0, 3)]
-        soundOn = prefs.getBoolean("ses", true)
+        val lvl = prefs.getInt("sesSeviye", 40).coerceIn(0, 100)
+        soundVol = (lvl / 100f) * (lvl / 100f)
+        soundOn = prefs.getBoolean("ses", true) && lvl > 0
         vibOn = prefs.getBoolean("titresim", true)
         vibMs = prefs.getInt("titresimMs", 18)
         nextPref = prefs.getBoolean("sonrakiTahmin", true)
@@ -1090,7 +1100,14 @@ class T9Service : InputMethodService() {
     }
 
     private fun feedback(v: View) {
-        if (soundOn) v.playSoundEffect(SoundEffectConstants.CLICK)
+        if (soundOn) {
+            try {
+                val am = getSystemService(Context.AUDIO_SERVICE) as AudioManager
+                am.playSoundEffect(AudioManager.FX_KEYPRESS_STANDARD, soundVol)
+            } catch (e: Exception) {
+                v.playSoundEffect(SoundEffectConstants.CLICK)
+            }
+        }
         if (vibOn) {
             try {
                 @Suppress("DEPRECATION")
