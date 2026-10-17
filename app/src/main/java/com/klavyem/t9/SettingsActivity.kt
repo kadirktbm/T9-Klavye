@@ -172,6 +172,9 @@ class SettingsActivity : Activity() {
         header("Yazım")
         toggle("Cümle başında otomatik büyük harf", "otoBuyuk", true)
         toggle("Sonraki kelime tahmini", "sonrakiTahmin", true)
+        toggle("Noktalamadan sonra otomatik boşluk", "otoBosluk", true)
+        toggle("Özel isimleri otomatik büyük harfle yaz", "ozelIsim", true)
+        toggle("Boşluktan sonra silme tuşu kelimeyi yeniden düzenlesin", "geriDon", true)
 
         header("Yedekleme")
         countText = TextView(this)
@@ -217,6 +220,16 @@ class SettingsActivity : Activity() {
                 }
                 save { putInt("temizSayac", prefs.getInt("temizSayac", 0) + 1) }
                 info.text = "Kelime tahmini geçmişi silindi."
+            }
+        }
+        button("Öğrenilen özel isimleri sil") {
+            confirm("Büyük harfle yazarak öğrettiğiniz özel isimler silinsin mi? İller silinmez.") {
+                try {
+                    File(filesDir, "ozel.txt").delete()
+                } catch (e: Exception) {
+                }
+                save { putInt("ozelSayac", prefs.getInt("ozelSayac", 0) + 1) }
+                info.text = "Öğrenilen özel isimler silindi."
             }
         }
         button("Pano geçmişini sil") {

@@ -35,6 +35,18 @@ import android.widget.Toast
 import java.io.File
 import java.util.Locale
 
+private const val PROVINCES =
+    "Türkiye Adana Adıyaman Afyonkarahisar Ağrı Aksaray Amasya Ankara Antalya Ardahan Artvin Balıkesir " +
+    "Bartın Batman Bayburt Bilecik Bingöl Bitlis Bolu Burdur Bursa Çanakkale Çankırı Çorum Denizli " +
+    "Diyarbakır Düzce Edirne Elazığ Erzincan Erzurum Eskişehir Gaziantep Giresun Gümüşhane Hakkari " +
+    "Hatay Iğdır Isparta İstanbul İzmir Kahramanmaraş Karabük Karaman Kastamonu Kayseri Kırıkkale " +
+    "Kırklareli Kırşehir Kilis Kocaeli Konya Kütahya Malatya Manisa Mardin Mersin Muğla Muş Nevşehir " +
+    "Niğde Osmaniye Rize Sakarya Samsun Siirt Sinop Sivas Şanlıurfa Şırnak Tekirdağ Tokat Trabzon " +
+    "Tunceli Uşak Yalova Yozgat Zonguldak"
+
+private val DEFAULT_E = listOf("😀", "😂", "❤", "👍", "🙏", "😊", "😍", "😉")
+private val DEFAULT_S = listOf("@", "#", "&", "%", "+", "-", "=", "_")
+
 private const val EMOJIS =
     "😀 😃 😄 😁 😆 😅 😂 🤣 🙂 🙃 😉 😊 😇 🥰 😍 🤩 😘 😋 😛 😜 🤪 🤗 🤭 🤔 " +
     "😐 😑 😶 😏 😒 🙄 😬 😌 😔 😪 😴 😷 🤒 🤕 🤢 🤮 🥵 🥶 😵 🤯 🤠 🥳 😎 🤓 " +
@@ -86,6 +98,22 @@ class T9Service : InputMethodService() {
     private var shift = false
     private var autoShift = false
     private var capsLock = false
+    private var autoSpaceAllowed = true
+    private val properMap = HashMap<String, String>()
+    private val properLearned = HashSet<String>()
+    private var properCounter = 0
+    private var properOn = true
+    private var backReopen = true
+    private var lastDigits: String? = null
+    private var lastCands: List<String> = emptyList()
+    private var lastIndex = 0
+    private var lastShown = ""
+    private val usage = LinkedHashMap<String, Int>()
+    private val recentE = ArrayList<TextView>()
+    private val recentS = ArrayList<TextView>()
+    private var emojiSetCache: Set<String> = emptySet()
+    private var symbolSetCache: Set<String> = emptySet()
+    private val abbrRegex = Regex("(^|[^\\p{L}])(vs|vb)\\.\\s*$", RegexOption.IGNORE_CASE)
     private var lastShiftTap = 0L
     private var autoCapAllowed = false
     private var t9On = true
@@ -147,6 +175,9 @@ class T9Service : InputMethodService() {
         tapMap['1'] = ".,@?!'-"
         prefs = getSharedPreferences("ayar", Context.MODE_PRIVATE)
         clearCounter = prefs.getInt("temizSayac", 0)
+        properCounter = prefs.getInt("ozelSayac", 0)
+        initProper()
+        loadUsage()
         loadStats()
         loadWords()
         loadClips()
@@ -162,6 +193,33 @@ class T9Service : InputMethodService() {
     }
 
     override fun onEvaluateFullscreenMode(): Boolean = false
+
+    // Kullanıcı imleci başka yere götürürse bekleyen (altı çizili) kelimeyi bırak,
+    // böylece silme tuşu imleç neredeyse oradan siler
+    override fun onUpdateSelection(
+        oldSelStart: Int, oldSelEnd: Int,
+        newSelStart: Int, newSelEnd: Int,
+        candidatesStart: Int, candidatesEnd: Int
+    ) {
+        super.onUpdateSelection(oldSelStart, oldSelEnd, newSelStart, newSelEnd, candidatesStart, candidatesEnd)
+        if ((digits.isNotEmpty() || pendingActive) && candidatesStart != -1 &&
+            (newSelStart != candidatesEnd || newSelEnd != candidatesEnd)
+        ) {
+            abandonComposing()
+        }
+    }
+
+    private fun abandonComposing() {
+        handler.removeCallbacks(commitRunnable)
+        currentInputConnection?.finishComposingText()
+        digits = ""
+        candidates = emptyList()
+        index = 0
+        pendingActive = false
+        manualWord.setLength(0)
+        renderBar()
+        autoCapSoon()
+    }
 
     override fun onFinishInputView(finishingInput: Boolean) {
         saveStats()
@@ -179,6 +237,11 @@ class T9Service : InputMethodService() {
             freq.clear()
             learned.clear()
             statDirty = 0
+        }
+        val oc = prefs.getInt("ozelSayac", 0)
+        if (oc != properCounter) {
+            properCounter = oc
+            initProper()
         }
         // Pano silindiyse yeniden oku
         if (File(filesDir, "pano.txt").lastModified() != panoStamp) {
@@ -214,6 +277,14 @@ class T9Service : InputMethodService() {
             v != InputType.TYPE_TEXT_VARIATION_EMAIL_ADDRESS &&
             v != InputType.TYPE_TEXT_VARIATION_WEB_EMAIL_ADDRESS &&
             v != InputType.TYPE_TEXT_VARIATION_URI
+        autoSpaceAllowed = prefs.getBoolean("otoBosluk", true) && cls == InputType.TYPE_CLASS_TEXT &&
+            v != InputType.TYPE_TEXT_VARIATION_PASSWORD &&
+            v != InputType.TYPE_TEXT_VARIATION_VISIBLE_PASSWORD &&
+            v != InputType.TYPE_TEXT_VARIATION_WEB_PASSWORD &&
+            v != InputType.TYPE_TEXT_VARIATION_EMAIL_ADDRESS &&
+            v != InputType.TYPE_TEXT_VARIATION_WEB_EMAIL_ADDRESS &&
+            v != InputType.TYPE_TEXT_VARIATION_URI &&
+            v != InputType.TYPE_TEXT_VARIATION_FILTER
 
         if (!restarting && uiReady) {
             showPanel(
@@ -254,6 +325,7 @@ class T9Service : InputMethodService() {
                 }
             } catch (e: Exception) {
             }
+            for (p in PROVINCES.split(" ")) if (p.isNotEmpty()) addWord(p)
             val bg = HashMap<String, List<String>>()
             try {
                 assets.open("bigram.tsv").bufferedReader().use { r ->
@@ -288,8 +360,10 @@ class T9Service : InputMethodService() {
         if (privateField || w.length < 2) return
         addUserWord(w)
         val before = currentInputConnection?.getTextBeforeCursor(60, 0)?.toString() ?: ""
-        val b = if (before.lowercase(tr).endsWith(w)) before.dropLast(w.length) else ""
-        recordUse(w, b)
+        val low = before.lowercase(tr)
+        val b = if (low.endsWith(w)) before.dropLast(w.length) else ""
+        val typed = if (low.endsWith(w)) before.takeLast(w.length) else w
+        recordUse(w, b, typed)
     }
 
     // ---------- Kullanım sıklığı ve öğrenilen kelime çiftleri ----------
@@ -301,10 +375,50 @@ class T9Service : InputMethodService() {
         return if (p.isEmpty()) null else p.lowercase(tr)
     }
 
-    private fun recordUse(w: String, b: String) {
+    private fun sentenceStart(b: String): Boolean {
+        val t = b.trimEnd()
+        if (t.isEmpty() || b.endsWith("\n")) return true
+        return ".!?:\"“…".indexOf(t.last()) >= 0
+    }
+
+    private fun learnProperIfNeeded(lw: String, shown: String, b: String) {
+        if (!properOn || shown.length < 2 || properMap.containsKey(lw)) return
+        if (!shown[0].isUpperCase() || shown.lowercase(tr) != lw) return
+        for (i in 1 until shown.length) if (shown[i].isUpperCase()) return
+        if (sentenceStart(b)) return
+        properMap[lw] = shown
+        properLearned.add(lw)
+        try {
+            File(filesDir, "ozel.txt").appendText(shown + "\n")
+        } catch (e: Exception) {
+        }
+    }
+
+    private fun initProper() {
+        properMap.clear()
+        properLearned.clear()
+        for (p in PROVINCES.split(" ")) if (p.isNotEmpty()) properMap[p.lowercase(tr)] = p
+        try {
+            val f = File(filesDir, "ozel.txt")
+            if (f.exists()) {
+                f.readLines().forEach { l ->
+                    val s = l.trim()
+                    if (s.length >= 2) {
+                        val lw = s.lowercase(tr)
+                        properMap[lw] = s
+                        properLearned.add(lw)
+                    }
+                }
+            }
+        } catch (e: Exception) {
+        }
+    }
+
+    private fun recordUse(w: String, b: String, shown: String = w) {
         if (privateField) return
         val lw = w.lowercase(tr)
         if (!wordSet.contains(lw)) return
+        learnProperIfNeeded(lw, shown, b)
         freq[lw] = (freq[lw] ?: 0) + 1
         val p = prevWordOf(b)
         if (p != null) {
@@ -415,7 +529,7 @@ class T9Service : InputMethodService() {
         unknownWord = w
     }
 
-    // Eklediğin yanlış kelimeyi silmek için: öneriye iki kez uzun bas
+    // Eklediğin yanlış kelimeyi / öğrenilen özel ismi silmek için: öneriye iki kez uzun bas
     private fun onWordLongPress(w: String) {
         val uf = File(filesDir, "kullanici.txt")
         val mine = try {
@@ -423,24 +537,37 @@ class T9Service : InputMethodService() {
         } catch (e: Exception) {
             false
         }
-        if (!mine) {
+        val proper = properLearned.contains(w)
+        if (!mine && !proper) {
             if (wordSet.contains(w)) toast("\"$w\" hazır sözlükte, silinemez")
             return
         }
         val now = System.currentTimeMillis()
         if (delWord == w && now - delTime < 4000) {
-            try {
-                val left = uf.readLines().map { it.trim() }.filter { it.isNotEmpty() && it != w }
-                uf.writeText(if (left.isEmpty()) "" else left.joinToString("\n") + "\n")
-                userStamp = uf.lastModified()
-            } catch (e: Exception) {
+            if (mine) {
+                try {
+                    val left = uf.readLines().map { it.trim() }.filter { it.isNotEmpty() && it != w }
+                    uf.writeText(if (left.isEmpty()) "" else left.joinToString("\n") + "\n")
+                    userStamp = uf.lastModified()
+                } catch (e: Exception) {
+                }
+                val i = words.indexOf(w)
+                if (i >= 0) {
+                    words.removeAt(i)
+                    codes.removeAt(i)
+                }
+                wordSet.remove(w)
             }
-            val i = words.indexOf(w)
-            if (i >= 0) {
-                words.removeAt(i)
-                codes.removeAt(i)
+            if (proper) {
+                properMap.remove(w)
+                properLearned.remove(w)
+                try {
+                    val pf = File(filesDir, "ozel.txt")
+                    val left = pf.readLines().map { it.trim() }.filter { it.isNotEmpty() && it.lowercase(tr) != w }
+                    pf.writeText(if (left.isEmpty()) "" else left.joinToString("\n") + "\n")
+                } catch (e: Exception) {
+                }
             }
-            wordSet.remove(w)
             delWord = null
             toast("Silindi: $w")
             if (digits.isNotEmpty()) updateCandidates() else renderBar()
@@ -491,8 +618,11 @@ class T9Service : InputMethodService() {
         if (capsLock) setShift(true) else setShift(false)
     }
 
-    private fun styled(w: String): String =
-        if (capsLock) w.uppercase(tr) else if (shift) cap(w) else w
+    private fun styled(w: String): String {
+        if (capsLock) return w.uppercase(tr)
+        if (shift) return cap(w)
+        return if (properOn) (properMap[w] ?: w) else w
+    }
 
     private fun autoCapSoon() {
         handler.removeCallbacks(autoCapRunnable)
@@ -501,7 +631,13 @@ class T9Service : InputMethodService() {
 
     private fun autoCap() {
         if (!autoCapAllowed || digits.isNotEmpty() || pendingActive) return
-        val mode = currentInputConnection?.getCursorCapsMode(TextUtils.CAP_MODE_SENTENCES) ?: 0
+        val aic = currentInputConnection
+        var mode = aic?.getCursorCapsMode(TextUtils.CAP_MODE_SENTENCES) ?: 0
+        if (mode != 0) {
+            // "vs." ve "vb." gibi kısaltmalardan sonra büyük harfe geçme
+            val tail = aic?.getTextBeforeCursor(8, 0)?.toString() ?: ""
+            if (abbrRegex.containsMatchIn(tail)) mode = 0
+        }
         if (mode != 0) {
             autoShift = true
             setShift(true)
@@ -556,7 +692,15 @@ class T9Service : InputMethodService() {
             var b = ic.getTextBeforeCursor(60, 0)?.toString() ?: ""
             if (cur.isNotEmpty() && b.endsWith(cur)) b = b.dropLast(cur.length)
             ic.commitText(cur + trailing, 1)
-            if (used.isNotEmpty()) recordUse(used, b)
+            if (used.isNotEmpty()) recordUse(used, b, cur)
+            if (trailing == " " && backReopen && cur.isNotEmpty()) {
+                lastDigits = digits
+                lastCands = candidates
+                lastIndex = index
+                lastShown = cur
+            } else {
+                lastDigits = null
+            }
             digits = ""
             candidates = emptyList()
             index = 0
@@ -611,6 +755,7 @@ class T9Service : InputMethodService() {
 
     // ---------- Tuş işlemleri ----------
     private fun onDigit(d: Char) {
+        lastDigits = null
         if (!t9On) {
             onManualKey(d)
             return
@@ -647,7 +792,27 @@ class T9Service : InputMethodService() {
         autoCapSoon()
     }
 
+    // Boşluktan hemen sonra silme: kelime tekrar düzenlenebilir hale gelir
+    private fun tryReopen(): Boolean {
+        val ld = lastDigits ?: return false
+        lastDigits = null
+        if (!backReopen) return false
+        val ic = currentInputConnection ?: return false
+        val tail = lastShown + " "
+        val b = ic.getTextBeforeCursor(tail.length, 0)?.toString() ?: return false
+        if (b != tail) return false
+        ic.deleteSurroundingText(tail.length, 0)
+        digits = ld
+        candidates = lastCands
+        index = lastIndex
+        if (lastShown.isNotEmpty() && lastShown[0].isUpperCase()) setShift(true)
+        showComposing()
+        renderBar()
+        return true
+    }
+
     private fun onBackspace() {
+        if (!pendingActive && digits.isEmpty() && lastDigits != null && tryReopen()) return
         if (pendingActive) {
             handler.removeCallbacks(commitRunnable)
             pendingActive = false
@@ -691,6 +856,7 @@ class T9Service : InputMethodService() {
     }
 
     private fun onEnter() {
+        lastDigits = null
         commitAll()
         finishManualWord()
         val opts = currentInputEditorInfo?.imeOptions ?: 0
@@ -708,9 +874,21 @@ class T9Service : InputMethodService() {
     }
 
     private fun punct(s: String) {
+        lastDigits = null
         commitAll()
         finishManualWord()
-        currentInputConnection?.commitText(s, 1)
+        val pic = currentInputConnection
+        var out = s
+        if (autoSpaceAllowed && pic != null && (s == "." || s == "!" || s == "?")) {
+            val b = pic.getTextBeforeCursor(3, 0)?.toString() ?: ""
+            if (s == "." && b.length >= 3 && b.endsWith(". ") && b[0].isLetter()) {
+                // Üç nokta (...) yazılırken otomatik eklenen boşluğu geri al
+                pic.deleteSurroundingText(1, 0)
+            } else if (b.isNotEmpty() && b.last().isLetter()) {
+                out = s + " "
+            }
+        }
+        pic?.commitText(out, 1)
         resetShift()
         nextWords = emptyList()
         autoCapSoon()
@@ -763,6 +941,7 @@ class T9Service : InputMethodService() {
             }
         }
         if (p == 4) renderClips()
+        if (p == 1 || p == 3) refreshRecents()
     }
 
     private fun toggleMode() {
@@ -906,6 +1085,8 @@ class T9Service : InputMethodService() {
         vibOn = prefs.getBoolean("titresim", true)
         vibMs = prefs.getInt("titresimMs", 18)
         nextPref = prefs.getBoolean("sonrakiTahmin", true)
+        properOn = prefs.getBoolean("ozelIsim", true)
+        backReopen = prefs.getBoolean("geriDon", true)
     }
 
     private fun feedback(v: View) {
@@ -1099,7 +1280,7 @@ class T9Service : InputMethodService() {
                 tv.setTextColor(txt)
                 tv.setOnClickListener {
                     val b = currentInputConnection?.getTextBeforeCursor(60, 0)?.toString() ?: ""
-                    recordUse(w, b)
+                    recordUse(w, b, shown)
                     currentInputConnection?.commitText("$shown ", 1)
                     resetShift()
                     nextWords = emptyList()
@@ -1213,7 +1394,10 @@ class T9Service : InputMethodService() {
     private fun symbolRow(items: String, size: Float, fill: Int): LinearLayout {
         val r = hLayout()
         val list = items.split(" ").filter { it.isNotEmpty() }
-        for (s in list) r.addView(makeKey(s, null, size) { punct(s) }, lp(0, MATCH, 1f))
+        for (s in list) r.addView(makeKey(s, null, size) {
+            recordSym(s)
+            punct(s)
+        }, lp(0, MATCH, 1f))
         for (i in list.size until fill) r.addView(spacer(1f))
         return r
     }
@@ -1221,10 +1405,26 @@ class T9Service : InputMethodService() {
     private fun buildSymbols(): LinearLayout {
         val a = hLayout()
         val grid = vLayout()
-        grid.addView(symbolRow("+ - & _ ₺ # @ £ € $", 18f, 10), lp(MATCH, 0, 1f))
-        grid.addView(symbolRow("¢ ~ ` | • √ π ÷ × §", 18f, 10), lp(MATCH, 0, 1f))
-        grid.addView(symbolRow("∆ \\ } { = ° % © ® ™", 18f, 10), lp(MATCH, 0, 1f))
-        grid.addView(symbolRow("✓ [ ] < > ^", 18f, 10), lp(MATCH, 0, 1f))
+        val symRows = listOf(
+            "+ - & _ ₺ # @ £ € $",
+            "¢ ~ ` | • √ π ÷ × §",
+            "∆ \\ } { = ° % © ® ™",
+            "✓ [ ] < > ^"
+        )
+        val symAll = HashSet<String>()
+        for (r in symRows) for (s in r.split(" ")) if (s.isNotEmpty()) symAll.add(s)
+        symbolSetCache = symAll
+        recentS.clear()
+        val rs = hLayout()
+        for (j in 0 until 8) {
+            val tv = makeKey("", null, 18f) { }
+            recentS.add(tv)
+            rs.addView(tv, lp(0, MATCH, 1f))
+        }
+        rs.addView(spacer(1f))
+        rs.addView(spacer(1f))
+        grid.addView(rs, lp(MATCH, 0, 1f))
+        for (r in symRows) grid.addView(symbolRow(r, 18f, 10), lp(MATCH, 0, 1f))
         a.addView(grid, lp(0, MATCH, 8.5f))
 
         val right = vLayout()
@@ -1260,11 +1460,93 @@ class T9Service : InputMethodService() {
         return a
     }
 
+    private fun loadUsage() {
+        try {
+            val f = File(filesDir, "sik_emoji.txt")
+            if (f.exists()) {
+                f.forEachLine { l ->
+                    val p = l.split('\t')
+                    if (p.size == 2) {
+                        val n = p[1].toIntOrNull()
+                        if (n != null) usage[p[0]] = n
+                    }
+                }
+            }
+        } catch (e: Exception) {
+        }
+    }
+
+    private fun recordSym(s: String) {
+        val n = (usage[s] ?: 0) + 1
+        usage.remove(s)
+        usage[s] = n
+        if (usage.size > 200) usage.remove(usage.keys.first())
+        try {
+            val sb = StringBuilder()
+            for ((k, v) in usage) sb.append(k).append('\t').append(v).append('\n')
+            File(filesDir, "sik_emoji.txt").writeText(sb.toString())
+        } catch (e: Exception) {
+        }
+    }
+
+    private fun topSyms(set: Set<String>, defaults: List<String>): List<String> {
+        val res = ArrayList<String>()
+        val sorted = usage.entries.toList().reversed()
+            .filter { set.contains(it.key) }
+            .sortedByDescending { it.value }
+        for (e in sorted) {
+            if (res.size >= 8) break
+            res.add(e.key)
+        }
+        for (d in defaults) {
+            if (res.size >= 8) break
+            if (!res.contains(d)) res.add(d)
+        }
+        return res
+    }
+
+    private fun fillRecent(views: List<TextView>, items: List<String>) {
+        for (i in views.indices) {
+            val e = items.getOrNull(i)
+            val tv = views[i]
+            if (e == null) {
+                tv.text = ""
+                tv.setOnClickListener(null)
+            } else {
+                tv.text = e
+                tv.setOnClickListener {
+                    feedback(tv)
+                    recordSym(e)
+                    punct(e)
+                }
+            }
+        }
+    }
+
+    private fun refreshRecents() {
+        fillRecent(recentE, topSyms(emojiSetCache, DEFAULT_E))
+        fillRecent(recentS, topSyms(symbolSetCache, DEFAULT_S))
+    }
+
     private fun buildEmoji(): LinearLayout {
         val a = hLayout()
         val sv = ScrollView(this)
         val col = vLayout()
         val list = EMOJIS.split(" ").filter { it.isNotEmpty() }
+        emojiSetCache = list.toHashSet()
+        recentE.clear()
+        val rr = hLayout()
+        for (j in 0 until 8) {
+            val tv = TextView(this)
+            tv.gravity = Gravity.CENTER
+            tv.textSize = 24f
+            recentE.add(tv)
+            rr.addView(tv, LinearLayout.LayoutParams(0, dp(48), 1f))
+        }
+        col.addView(rr, LinearLayout.LayoutParams(MATCH, WRAP))
+        val line = View(this)
+        line.setBackgroundColor(keyPressedColor)
+        col.addView(line, LinearLayout.LayoutParams(MATCH, dp(1)))
         var i = 0
         while (i < list.size) {
             val row = hLayout()
@@ -1275,7 +1557,10 @@ class T9Service : InputMethodService() {
                 tv.textSize = 24f
                 if (e != null) {
                     tv.text = e
-                    tv.setOnClickListener { punct(e) }
+                    tv.setOnClickListener {
+                        recordSym(e)
+                        punct(e)
+                    }
                 }
                 row.addView(tv, LinearLayout.LayoutParams(0, dp(48), 1f))
             }
