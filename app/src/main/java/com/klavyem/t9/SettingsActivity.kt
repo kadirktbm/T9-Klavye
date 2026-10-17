@@ -208,6 +208,17 @@ class SettingsActivity : Activity() {
                 info.text = "Eklediğiniz kelimeler silindi."
             }
         }
+        button("Kelime tahmini geçmişini sil") {
+            confirm("Öğrenilen kelime sıklığı ve kelime sırası geçmişi silinsin mi? Eklediğiniz kelimeler silinmez.") {
+                try {
+                    File(filesDir, "sikilik.txt").delete()
+                    File(filesDir, "gecmis.tsv").delete()
+                } catch (e: Exception) {
+                }
+                save { putInt("temizSayac", prefs.getInt("temizSayac", 0) + 1) }
+                info.text = "Kelime tahmini geçmişi silindi."
+            }
+        }
         button("Pano geçmişini sil") {
             confirm("Pano geçmişi silinsin mi?") {
                 touchFile(File(filesDir, "pano.txt"), "")

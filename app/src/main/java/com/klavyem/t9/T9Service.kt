@@ -97,6 +97,11 @@ class T9Service : InputMethodService() {
     private var pendingIdx = 0
     private val manualWord = StringBuilder()
     private var unknownWord: String? = null
+    private val freq = HashMap<String, Int>()
+    private val learned = HashMap<String, HashMap<String, Int>>()
+    private var statDirty = 0
+    private var clearCounter = 0
+    private val statLock = Any()
     private var delWord: String? = null
     private var delTime = 0L
     private val commitRunnable = Runnable { commitPending() }
@@ -141,6 +146,8 @@ class T9Service : InputMethodService() {
         }
         tapMap['1'] = ".,@?!'-"
         prefs = getSharedPreferences("ayar", Context.MODE_PRIVATE)
+        clearCounter = prefs.getInt("temizSayac", 0)
+        loadStats()
         loadWords()
         loadClips()
         clipboard = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
@@ -148,6 +155,7 @@ class T9Service : InputMethodService() {
     }
 
     override fun onDestroy() {
+        saveStats()
         clipboard?.removePrimaryClipChangedListener(clipListener)
         handler.removeCallbacksAndMessages(null)
         super.onDestroy()
@@ -156,6 +164,7 @@ class T9Service : InputMethodService() {
     override fun onEvaluateFullscreenMode(): Boolean = false
 
     override fun onFinishInputView(finishingInput: Boolean) {
+        saveStats()
         super.onFinishInputView(finishingInput)
     }
 
@@ -163,6 +172,14 @@ class T9Service : InputMethodService() {
         super.onStartInputView(info, restarting)
         // Ayarlar değiştiyse klavyeyi yeniden kur
         if (uiReady && prefs.getInt("ver", 0) != builtVer) setInputView(onCreateInputView())
+        // Kelime tahmini geçmişi silindiyse bellektekini de temizle
+        val cc = prefs.getInt("temizSayac", 0)
+        if (cc != clearCounter) {
+            clearCounter = cc
+            freq.clear()
+            learned.clear()
+            statDirty = 0
+        }
         // Pano silindiyse yeniden oku
         if (File(filesDir, "pano.txt").lastModified() != panoStamp) {
             clips.clear()
@@ -270,6 +287,93 @@ class T9Service : InputMethodService() {
         manualWord.setLength(0)
         if (privateField || w.length < 2) return
         addUserWord(w)
+        val before = currentInputConnection?.getTextBeforeCursor(60, 0)?.toString() ?: ""
+        val b = if (before.lowercase(tr).endsWith(w)) before.dropLast(w.length) else ""
+        recordUse(w, b)
+    }
+
+    // ---------- Kullanım sıklığı ve öğrenilen kelime çiftleri ----------
+    private fun prevWordOf(b: String): String? {
+        if (b.isEmpty() || b.last() != ' ') return null
+        val t = b.trimEnd()
+        if (t.isEmpty() || !t.last().isLetter()) return null
+        val p = t.takeLastWhile { it.isLetter() }
+        return if (p.isEmpty()) null else p.lowercase(tr)
+    }
+
+    private fun recordUse(w: String, b: String) {
+        if (privateField) return
+        val lw = w.lowercase(tr)
+        if (!wordSet.contains(lw)) return
+        freq[lw] = (freq[lw] ?: 0) + 1
+        val p = prevWordOf(b)
+        if (p != null) {
+            var m = learned[p]
+            if (m == null) {
+                m = HashMap()
+                learned[p] = m
+            }
+            m[lw] = (m[lw] ?: 0) + 1
+        }
+        statDirty++
+        if (statDirty >= 15) saveStats()
+    }
+
+    private fun loadStats() {
+        try {
+            val f = File(filesDir, "sikilik.txt")
+            if (f.exists()) {
+                f.forEachLine { l ->
+                    val p = l.split('\t')
+                    if (p.size == 2) {
+                        val n = p[1].toIntOrNull()
+                        if (n != null) freq[p[0]] = n
+                    }
+                }
+            }
+            val g = File(filesDir, "gecmis.tsv")
+            if (g.exists()) {
+                g.forEachLine { l ->
+                    val p = l.split('\t')
+                    if (p.size == 3) {
+                        val n = p[2].toIntOrNull()
+                        if (n != null) {
+                            var m = learned[p[0]]
+                            if (m == null) {
+                                m = HashMap()
+                                learned[p[0]] = m
+                            }
+                            m[p[1]] = n
+                        }
+                    }
+                }
+            }
+        } catch (e: Exception) {
+        }
+    }
+
+    private fun saveStats() {
+        if (statDirty == 0) return
+        statDirty = 0
+        val fb = StringBuilder()
+        for ((k, v) in freq) fb.append(k).append('\t').append(v).append('\n')
+        val gb = StringBuilder()
+        for ((p, m) in learned) {
+            for (e in m.entries.sortedByDescending { it.value }.take(12)) {
+                gb.append(p).append('\t').append(e.key).append('\t').append(e.value).append('\n')
+            }
+        }
+        val fs = fb.toString()
+        val gs = gb.toString()
+        Thread {
+            synchronized(statLock) {
+                try {
+                    File(filesDir, "sikilik.txt").writeText(fs)
+                    File(filesDir, "gecmis.tsv").writeText(gs)
+                } catch (e: Exception) {
+                }
+            }
+        }.start()
     }
 
     private fun addUserWord(w: String): Boolean {
@@ -352,12 +456,25 @@ class T9Service : InputMethodService() {
     // o kelimenin bigram listesini öneri olarak gösterir.
     private fun refreshNext() {
         nextWords = emptyList()
-        if (!nextPref || digits.isNotEmpty() || pendingActive || bigram.isEmpty()) return
+        if (!nextPref || digits.isNotEmpty() || pendingActive) return
         val before = currentInputConnection?.getTextBeforeCursor(60, 0)?.toString() ?: return
         if (before.isEmpty() || before.last() != ' ') return
         val last = before.trimEnd().takeLastWhile { it.isLetter() }
         if (last.isEmpty()) return
-        nextWords = bigram[last.lowercase(tr)] ?: emptyList()
+        val key = last.lowercase(tr)
+        val list = ArrayList<String>()
+        val lr = learned[key]
+        if (lr != null) {
+            for (e in lr.entries.sortedByDescending { it.value }.take(8)) list.add(e.key)
+        }
+        val st = bigram[key]
+        if (st != null) {
+            for (w in st) {
+                if (list.size >= 12) break
+                if (!list.contains(w)) list.add(w)
+            }
+        }
+        nextWords = list
     }
 
     // ---------- Büyük harf ----------
@@ -410,14 +527,15 @@ class T9Service : InputMethodService() {
         for (i in words.indices) {
             val c = codes[i]
             if (c == digits) {
-                if (exact.size < 12) exact.add(words[i])
-            } else if (prefix.size < 8 && c.length > digits.length && c.startsWith(digits)) {
+                if (exact.size < 40) exact.add(words[i])
+            } else if (prefix.size < 24 && c.length > digits.length && c.startsWith(digits)) {
                 prefix.add(words[i])
             }
-            if (exact.size >= 12 && prefix.size >= 8) break
+            if (exact.size >= 40 && prefix.size >= 24) break
         }
-        val list = ArrayList<String>(exact)
-        list.addAll(prefix)
+        // Sık kullandığın kelimeler öne geçer (eşitlikte sözlük sırası korunur)
+        val list = ArrayList<String>(exact.sortedByDescending { freq[it] ?: 0 }.take(12))
+        list.addAll(prefix.sortedByDescending { freq[it] ?: 0 }.take(8))
         if (list.isEmpty()) list.add(digits.map { keyMap[it]!![0] }.joinToString(""))
         candidates = list
         index = 0
@@ -433,7 +551,12 @@ class T9Service : InputMethodService() {
     private fun commitWord(trailing: String) {
         val ic = currentInputConnection ?: return
         if (digits.isNotEmpty()) {
-            ic.commitText(current() + trailing, 1)
+            val used = candidates.getOrNull(index) ?: ""
+            val cur = current()
+            var b = ic.getTextBeforeCursor(60, 0)?.toString() ?: ""
+            if (cur.isNotEmpty() && b.endsWith(cur)) b = b.dropLast(cur.length)
+            ic.commitText(cur + trailing, 1)
+            if (used.isNotEmpty()) recordUse(used, b)
             digits = ""
             candidates = emptyList()
             index = 0
@@ -975,6 +1098,8 @@ class T9Service : InputMethodService() {
                 tv.gravity = Gravity.CENTER_VERTICAL
                 tv.setTextColor(txt)
                 tv.setOnClickListener {
+                    val b = currentInputConnection?.getTextBeforeCursor(60, 0)?.toString() ?: ""
+                    recordUse(w, b)
                     currentInputConnection?.commitText("$shown ", 1)
                     resetShift()
                     nextWords = emptyList()
