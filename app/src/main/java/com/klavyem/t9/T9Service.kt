@@ -101,6 +101,8 @@ class T9Service : InputMethodService() {
     private var autoShift = false
     private var capsLock = false
     private var autoSpaceAllowed = true
+    private var showPunct = false
+    private val punctChips = listOf(";", "\"", "(", ")", "-", "…", "/")
     private val properMap = HashMap<String, String>()
     private val properLearned = HashSet<String>()
     private var properCounter = 0
@@ -758,6 +760,7 @@ class T9Service : InputMethodService() {
     // ---------- Tuş işlemleri ----------
     private fun onDigit(d: Char) {
         lastDigits = null
+        showPunct = false
         if (!t9On) {
             onManualKey(d)
             return
@@ -783,6 +786,7 @@ class T9Service : InputMethodService() {
     }
 
     private fun onSpace() {
+        showPunct = false
         if (digits.isNotEmpty()) {
             commitWord(" ")
         } else {
@@ -814,6 +818,7 @@ class T9Service : InputMethodService() {
     }
 
     private fun onBackspace() {
+        showPunct = false
         if (!pendingActive && digits.isEmpty() && lastDigits != null && tryReopen()) return
         if (pendingActive) {
             handler.removeCallbacks(commitRunnable)
@@ -859,6 +864,7 @@ class T9Service : InputMethodService() {
 
     private fun onEnter() {
         lastDigits = null
+        showPunct = false
         commitAll()
         finishManualWord()
         val opts = currentInputEditorInfo?.imeOptions ?: 0
@@ -877,6 +883,7 @@ class T9Service : InputMethodService() {
 
     private fun punct(s: String) {
         lastDigits = null
+        showPunct = false
         commitAll()
         finishManualWord()
         val pic = currentInputConnection
@@ -1214,6 +1221,35 @@ class T9Service : InputMethodService() {
     private fun renderBar() {
         if (!::candidateBar.isInitialized) return
         candidateBar.removeAllViews()
+        if (showPunct && digits.isEmpty() && !pendingActive) {
+            for (s in punctChips) {
+                val chip = TextView(this)
+                chip.text = s
+                chip.textSize = 22f * fontScale
+                chip.setTextColor(txt)
+                chip.gravity = Gravity.CENTER
+                val cb = GradientDrawable()
+                cb.setColor(keyPressedColor)
+                cb.cornerRadius = dp(8).toFloat()
+                chip.background = cb
+                chip.setPadding(dp(14), 0, dp(14), 0)
+                chip.setOnClickListener {
+                    feedback(chip)
+                    showPunct = false
+                    punct(s)
+                    renderBar()
+                }
+                val clp = LinearLayout.LayoutParams(WRAP, MATCH)
+                clp.setMargins(dp(2), dp(5), dp(2), dp(5))
+                candidateBar.addView(chip, clp)
+            }
+            val psep = View(this)
+            psep.setBackgroundColor(keyPressedColor)
+            val pslp = LinearLayout.LayoutParams(dp(1), dp(26))
+            pslp.gravity = Gravity.CENTER_VERTICAL
+            pslp.setMargins(dp(8), 0, dp(4), 0)
+            candidateBar.addView(psep, pslp)
+        }
         if (t9On && digits.length == 1 && tapMap.containsKey(digits[0]) && digits[0] != '1') {
             val d = digits[0]
             val opts = ArrayList<String>()
@@ -1357,7 +1393,7 @@ class T9Service : InputMethodService() {
         val a = hLayout()
 
         val left = vLayout()
-        for (s in listOf("!", "?", "'", "~")) {
+        for (s in listOf("!", "?", "'", ":")) {
             left.addView(makeKey(s, null, 20f) { punct(s) }, lp(MATCH, 0, 1f))
         }
         a.addView(left, lp(0, MATCH, 0.6f))
@@ -1432,15 +1468,7 @@ class T9Service : InputMethodService() {
         for (r in symRows) for (s in r.split(" ")) if (s.isNotEmpty()) symAll.add(s)
         symbolSetCache = symAll
         recentS.clear()
-        val rs = hLayout()
-        for (j in 0 until 8) {
-            val tv = makeKey("", null, 18f) { }
-            recentS.add(tv)
-            rs.addView(tv, lp(0, MATCH, 1f))
-        }
-        rs.addView(spacer(1f))
-        rs.addView(spacer(1f))
-        grid.addView(rs, lp(MATCH, 0, 1f))
+        grid.addView(symbolRow(": ; \" ( ) - … / « »", 18f, 10), lp(MATCH, 0, 1f))
         for (r in symRows) grid.addView(symbolRow(r, 18f, 10), lp(MATCH, 0, 1f))
         a.addView(grid, lp(0, MATCH, 8.5f))
 
@@ -1660,7 +1688,15 @@ class T9Service : InputMethodService() {
             } else false
         }
         bottom.addView(spaceKey, lp(0, MATCH, 4f))
-        bottom.addView(makeKey(".", null, 22f) { punct(".") }, lp(0, MATCH, 0.8f))
+        val periodKey = makeKey(".", null, 22f) { punct(".") }
+        periodKey.setOnLongClickListener {
+            feedback(periodKey)
+            commitAll()
+            showPunct = true
+            renderBar()
+            true
+        }
+        bottom.addView(periodKey, lp(0, MATCH, 0.8f))
         bottom.addView(makeKey("↵", null, 22f) { onEnter() }, lp(0, MATCH, 1.2f))
         root.addView(bottom, LinearLayout.LayoutParams(MATCH, dp((52 * heightScale).toInt())))
 
